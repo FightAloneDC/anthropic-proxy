@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -12,6 +13,37 @@ import (
 )
 
 func main() {
+	// Check for control flags before loading config
+	stopFlag := flag.Bool("stop", false, "stop running daemon")
+	statusFlag := flag.Bool("status", false, "show daemon status")
+	flag.Parse()
+
+	// Handle --stop command
+	if *stopFlag {
+		if err := daemon.Stop(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("anthropic-proxy stopped")
+		return
+	}
+
+	// Handle --status command
+	if *statusFlag {
+		pid, running, err := daemon.Status()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		if running {
+			fmt.Printf("anthropic-proxy is running (PID %d)\n", pid)
+		} else {
+			fmt.Printf("anthropic-proxy is not running (stale PID file, PID %d)\n", pid)
+			os.Exit(1)
+		}
+		return
+	}
+
 	// Load configuration
 	cfg, err := config.Load()
 	if err != nil {

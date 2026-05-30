@@ -18,6 +18,7 @@ LINUX_ARCHES   := amd64 arm64 arm 386
 DARWIN_ARCHES  := amd64 arm64
 FREEBSD_ARCHES := amd64 arm64 arm 386
 OPENBSD_ARCHES := amd64 arm 386
+WINDOWS_ARCHES := amd64 arm64 386
 
 # ===============================
 # Host Detection
@@ -60,6 +61,24 @@ define build-go
 	$(4)
 endef
 
+# Windows builds need .exe suffix
+define build-go-windows
+	@echo ">> Building $(1) for $(2)/$(3)"
+	@mkdir -p $(BUILD_DIR)
+	CGO_ENABLED=0 GOOS=$(2) GOARCH=$(3) \
+	$(GOBUILD) $(RELEASE_FLAGS) \
+	-o $(BUILD_DIR)/$(1)-$(2)-$(3).exe \
+	$(4)
+endef
+
+define build-all-binaries
+	$(call build-go,$(APP_NAME),$(1),$(2),$(APP_SOURCE))
+endef
+
+define build-all-binaries-windows
+	$(call build-go-windows,$(APP_NAME),$(1),$(2),$(APP_SOURCE))
+endef
+
 # ===============================
 # Default Targets
 # ===============================
@@ -71,7 +90,8 @@ all: \
 	$(foreach a,$(LINUX_ARCHES),build-linux-$(a)) \
 	$(foreach a,$(DARWIN_ARCHES),build-darwin-$(a)) \
 	$(foreach a,$(FREEBSD_ARCHES),build-freebsd-$(a)) \
-	$(foreach a,$(OPENBSD_ARCHES),build-openbsd-$(a))
+	$(foreach a,$(OPENBSD_ARCHES),build-openbsd-$(a)) \
+	$(foreach a,$(WINDOWS_ARCHES),build-windows-$(a))
 
 clean:
 	rm -rf $(BUILD_DIR)
@@ -85,10 +105,6 @@ run: local
 # ===============================
 # OS / ARCH Targets
 # ===============================
-define build-all-binaries
-	$(call build-go,$(APP_NAME),$(1),$(2),$(APP_SOURCE))
-endef
-
 $(foreach a,$(LINUX_ARCHES), \
   $(eval build-linux-$(a): ; $(call build-all-binaries,linux,$(a))) )
 
@@ -100,3 +116,6 @@ $(foreach a,$(FREEBSD_ARCHES), \
 
 $(foreach a,$(OPENBSD_ARCHES), \
   $(eval build-openbsd-$(a): ; $(call build-all-binaries,openbsd,$(a))) )
+
+$(foreach a,$(WINDOWS_ARCHES), \
+  $(eval build-windows-$(a): ; $(call build-all-binaries-windows,windows,$(a))) )
