@@ -1,0 +1,87 @@
+#-------------------------
+# IDE files
+#-------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.commandcode/
+
+#-------------------------
+# Build outputs
+#-------------------------
+/build/
+/run/
+/dist/
+/bin/
+/out/
+/*.json
+/anthropic-proxy
+
+
+#-------------------------
+# Common Go ignores
+#-------------------------
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+#-------------------------
+# Go workspace file
+#-------------------------
+go.work
+go.work.sum
+
+#-------------------------
+# OS generated files
+#-------------------------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+#-------------------------
+# Development Folders
+#-------------------------
+**/__dev/
+/keys/
+debug-output/
+
+#-------------------------
+# Development Files
+#-------------------------
+**/*-v[0-9].*
+**/*-v[0-9][0-9].*
+**/*-v[0-9]
+**/*-v[0-9][0-9]
+**/*-dev
+**/dev*.*
+**/*.code-workspace
+
+#-------------------------
+# Environment Files
+#-------------------------
+.env
+
+
+#-------------------------
+# Temporary files
+#-------------------------
+*.log
+*.tmp
+*.temp
+*.bak
+*.old
+*.backup
+*.json
+*.txt
+example-*
