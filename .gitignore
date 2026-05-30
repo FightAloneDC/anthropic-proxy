@@ -84,4 +84,5 @@ debug-output/
 *.backup
 *.json
 *.txt
+*.pid
 example-*
