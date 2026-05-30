@@ -10,7 +10,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -28,9 +30,25 @@ func main() {
 	skipThinking := flag.Bool("skip-thinking", false, "skip reasoning/thinking blocks")
 	modelMapStr := flag.String("model-map", getVal("MODEL_MAP", ""), "model mapping: client_model:backend_model,...")
 	debugFlag := flag.Bool("debug", false, "enable debug logging")
+	fg := flag.Bool("fg", false, "run in foreground (default: run as background daemon)")
 	flag.Parse()
 
 	debug = *debugFlag
+
+	// If not running in foreground and not already a daemon, fork to background
+	if !*fg && os.Getenv("_ANTHROPIC_PROXY_DAEMON") == "" {
+		daemonize()
+		return
+	}
+
+	// Setup logging to file when running as daemon
+	if os.Getenv("_ANTHROPIC_PROXY_DAEMON") != "" {
+		logFile := setupDaemonLog()
+		if logFile != nil {
+			defer logFile.Close()
+		}
+		writePIDFile()
+	}
 
 	// Parse model mapping
 	modelMap := parseModelMap(*modelMapStr)
@@ -46,6 +64,79 @@ func main() {
 
 	log.Printf("anthropic-proxy listening on :%s → %s", *port, *baseURL)
 	log.Fatal(http.ListenAndServe(":"+*port, nil))
+}
+
+// daemonize re-launches the process in the background
+func daemonize() {
+	execPath, err := os.Executable()
+	if err != nil {
+		log.Fatalf("failed to get executable path: %v", err)
+	}
+
+	// Build args, append marker env
+	args := os.Args[1:]
+
+	// Find the log file path
+	logDir := filepath.Dir(execPath)
+	logPath := filepath.Join(logDir, "anthropic-proxy.log")
+
+	// Open log file for daemon output
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		// Fallback: try current directory
+		logFile, err = os.OpenFile("anthropic-proxy.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to open log file: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
+	// Re-exec self with _ANTHROPIC_PROXY_DAEMON=1
+	env := append(os.Environ(), "_ANTHROPIC_PROXY_DAEMON=1")
+
+	proc, err := os.StartProcess(execPath, append([]string{execPath}, args...), &os.ProcAttr{
+		Dir: ".",
+		Env: env,
+		Files: []*os.File{
+			nil,     // stdin
+			logFile, // stdout
+			logFile, // stderr
+		},
+		Sys: &syscall.SysProcAttr{
+			Setsid: true, // Detach from terminal
+		},
+	})
+	if err != nil {
+		logFile.Close()
+		log.Fatalf("failed to daemonize: %v", err)
+	}
+	logFile.Close()
+
+	fmt.Printf("anthropic-proxy started as daemon (PID %d)\n", proc.Pid)
+	fmt.Printf("Log file: %s\n", logPath)
+	fmt.Printf("PID file: %s\n", filepath.Join(filepath.Dir(execPath), "anthropic-proxy.pid"))
+	fmt.Printf("Stop:     kill %d\n", proc.Pid)
+	proc.Release()
+}
+
+// setupDaemonLog redirects log output to file
+func setupDaemonLog() *os.File {
+	logPath := "anthropic-proxy.log"
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return nil
+	}
+	log.SetOutput(logFile)
+	return logFile
+}
+
+// writePIDFile writes the current PID to a file
+func writePIDFile() {
+	pidPath := "anthropic-proxy.pid"
+	err := os.WriteFile(pidPath, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0644)
+	if err != nil {
+		log.Printf("warning: failed to write PID file: %v", err)
+	}
 }
 
 // parseModelMap parses "claude-opus-4-8:mimo-v2.5-pro,claude-sonnet-4-6:laguna-m.1" into a map
