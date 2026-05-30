@@ -14,6 +14,9 @@ import (
 	"time"
 )
 
+// Global debug flag
+var debug bool
+
 func main() {
 	// Load .env file first (ignore error if not found)
 	loadDotEnv(".env")
@@ -23,12 +26,50 @@ func main() {
 	baseURL := flag.String("url", getVal("OPENAI_BASE_URL", "http://localhost:11434"), "OpenAI-compatible backend URL")
 	apiKey := flag.String("key", getVal("OPENAI_API_KEY", ""), "API key for backend")
 	skipThinking := flag.Bool("skip-thinking", false, "skip reasoning/thinking blocks")
+	modelMapStr := flag.String("model-map", getVal("MODEL_MAP", ""), "model mapping: client_model:backend_model,...")
+	debugFlag := flag.Bool("debug", false, "enable debug logging")
 	flag.Parse()
 
-	http.HandleFunc("/v1/messages", makeHandler(*baseURL, *apiKey, *skipThinking))
+	debug = *debugFlag
+
+	// Parse model mapping
+	modelMap := parseModelMap(*modelMapStr)
+	if len(modelMap) > 0 {
+		log.Printf("Model mapping:")
+		for from, to := range modelMap {
+			log.Printf("  %s → %s", from, to)
+		}
+	}
+
+	http.HandleFunc("/v1/models", makeModelsHandler(*baseURL, *apiKey))
+	http.HandleFunc("/v1/messages", makeHandler(*baseURL, *apiKey, *skipThinking, modelMap))
 
 	log.Printf("anthropic-proxy listening on :%s → %s", *port, *baseURL)
 	log.Fatal(http.ListenAndServe(":"+*port, nil))
+}
+
+// parseModelMap parses "claude-opus-4-8:mimo-v2.5-pro,claude-sonnet-4-6:laguna-m.1" into a map
+func parseModelMap(s string) map[string]string {
+	m := make(map[string]string)
+	if s == "" {
+		return m
+	}
+	for _, pair := range strings.Split(s, ",") {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+		parts := strings.SplitN(pair, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		from := strings.TrimSpace(parts[0])
+		to := strings.TrimSpace(parts[1])
+		if from != "" && to != "" {
+			m[from] = to
+		}
+	}
+	return m
 }
 
 // getVal checks env var first, then returns fallback
@@ -70,7 +111,48 @@ func loadDotEnv(path string) {
 	}
 }
 
-func makeHandler(baseURL, apiKey string, skipThinking bool) http.HandlerFunc {
+// makeModelsHandler creates a handler that proxies GET /v1/models to the backend
+func makeModelsHandler(baseURL, apiKey string) http.HandlerFunc {
+	client := &http.Client{Timeout: 30 * time.Second}
+	base := strings.TrimRight(baseURL, "/")
+	if strings.HasSuffix(base, "/v1") {
+		base = base[:len(base)-3]
+	}
+	modelsURL := base + "/v1/models"
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		log.Printf("→ GET %s", modelsURL)
+
+		proxyReq, err := http.NewRequest("GET", modelsURL, nil)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "api_error", err.Error())
+			return
+		}
+
+		if apiKey != "" {
+			proxyReq.Header.Set("Authorization", "Bearer "+apiKey)
+		}
+
+		resp, err := client.Do(proxyReq)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "api_error", "backend error: "+err.Error())
+			return
+		}
+		defer resp.Body.Close()
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "api_error", "failed to read backend response")
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(resp.StatusCode)
+		w.Write(body)
+	}
+}
+
+func makeHandler(baseURL, apiKey string, skipThinking bool, modelMap map[string]string) http.HandlerFunc {
 	client := &http.Client{Timeout: 5 * time.Minute}
 	base := strings.TrimRight(baseURL, "/")
 	if strings.HasSuffix(base, "/v1") {
@@ -97,10 +179,20 @@ func makeHandler(baseURL, apiKey string, skipThinking bool) http.HandlerFunc {
 			return
 		}
 
+		// Apply model mapping
+		if mapped, ok := modelMap[anthropicReq.Model]; ok {
+			if debug {
+				log.Printf("Model mapping: %s → %s", anthropicReq.Model, mapped)
+			}
+			anthropicReq.Model = mapped
+		}
+
 		openaiReq, thinkingEnabled := TranslateRequest(&anthropicReq)
 
 		reqBody, _ := json.Marshal(openaiReq)
-		log.Printf("→ %s %s model=%s stream=%v thinking=%v", r.Method, targetURL, openaiReq.Model, openaiReq.Stream, thinkingEnabled)
+		if debug {
+			log.Printf("→ %s %s model=%s stream=%v thinking=%v", r.Method, targetURL, openaiReq.Model, openaiReq.Stream, thinkingEnabled)
+		}
 
 		proxyReq, err := http.NewRequest("POST", targetURL, bytes.NewReader(reqBody))
 		if err != nil {
@@ -110,7 +202,6 @@ func makeHandler(baseURL, apiKey string, skipThinking bool) http.HandlerFunc {
 		proxyReq.Header.Set("Content-Type", "application/json")
 
 		// Always use configured API key for backend
-		// Client can send any key (or none) - proxy handles auth
 		if apiKey != "" {
 			proxyReq.Header.Set("Authorization", "Bearer "+apiKey)
 		}
@@ -130,7 +221,6 @@ func makeHandler(baseURL, apiKey string, skipThinking bool) http.HandlerFunc {
 		}
 
 		if anthropicReq.Stream {
-			// Skip thinking if CLI flag is set OR if thinking is disabled in request
 			shouldSkipThinking := skipThinking || !thinkingEnabled
 			streamResponse(w, resp, shouldSkipThinking)
 		} else {
@@ -154,6 +244,9 @@ func nonStreamResponse(w http.ResponseWriter, resp *http.Response) {
 		writeError(w, http.StatusBadGateway, "api_error", "failed to read backend response")
 		return
 	}
+
+	// Trim whitespace/padding that some backends prepend
+	body = bytes.TrimSpace(body)
 
 	var openaiResp OpenAIResponse
 	if err := json.Unmarshal(body, &openaiResp); err != nil {
@@ -195,7 +288,9 @@ func streamResponse(w http.ResponseWriter, resp *http.Response, skipThinking boo
 
 	emit := func(event string, data interface{}) {
 		j, _ := json.Marshal(data)
-		log.Printf("← SSE event=%s data=%s", event, string(j))
+		if debug {
+			log.Printf("← SSE event=%s data=%s", event, string(j))
+		}
 		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, string(j))
 		flusher.Flush()
 	}
