@@ -10,7 +10,7 @@ GO_TAGS         := netgo
 LDFLAGS         := -s -w
 RELEASE_FLAGS   := -trimpath -tags=$(GO_TAGS) -ldflags="$(LDFLAGS)"
 
-APP_SOURCE      := $(WORKDIR)
+APP_SOURCE      := $(WORKDIR)/cmd/anthropic-proxy
 # ===============================
 # OS / ARCH Matrix (per OS)
 # ===============================

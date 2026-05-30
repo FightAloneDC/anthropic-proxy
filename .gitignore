@@ -71,6 +71,7 @@ debug-output/
 # Environment Files
 #-------------------------
 .env
+config.yaml
 
 
 #-------------------------
