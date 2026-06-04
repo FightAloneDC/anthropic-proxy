@@ -25,19 +25,55 @@ OpenAI Chat SDK      →  /openai/v1/chat/completions  ──  direct forward
 ## Quick Start
 
 ```bash
-# Build
-go build -o anthropic-proxy ./cmd/anthropic-proxy
-
 # Create config
 cp config.example.yaml config.yaml
 # Edit config.yaml with your backend URL and API key
 
+# Build for current platform
+make
+
 # Run in foreground
-./anthropic-proxy start -fg
+./build/anthropic-proxy-linux-amd64 start -fg
 
 # Run as daemon
-./anthropic-proxy start
+./build/anthropic-proxy-linux-amd64 start
 ```
+
+## Build
+
+```bash
+# Build for current platform (auto-detects OS/arch)
+make
+
+# Build for current platform and run
+make run
+
+# Build for ALL platforms (Linux, macOS, FreeBSD, OpenBSD, Windows)
+make all
+
+# Build for specific platform/arch
+make build-linux-amd64
+make build-linux-arm64
+make build-darwin-arm64
+make build-windows-amd64
+
+# Clean build artifacts
+make clean
+```
+
+### Supported Platforms
+
+| OS | Architectures |
+|----|---------------|
+| Linux | amd64, arm64, arm, 386 |
+| macOS (Darwin) | amd64, arm64 |
+| FreeBSD | amd64, arm64, arm, 386 |
+| OpenBSD | amd64, arm, 386 |
+| Windows | amd64, arm64, 386 |
+
+Build output: `build/anthropic-proxy-{os}-{arch}` (Windows gets `.exe` suffix)
+
+Build flags: `CGO_ENABLED=0`, static binary, stripped symbols (`-s -w`), trimmed paths (`-trimpath`)
 
 ## CLI Commands
 
@@ -458,9 +494,13 @@ anthropic-proxy/
 │       ├── anthropic.go     # Anthropic API types
 │       ├── openai.go        # OpenAI Chat Completions types
 │       └── responses.go     # OpenAI Responses API types
+├── docs/
+│   ├── ARCHITECTURE.md      # Internal design, translation patterns
+│   └── TROUBLESHOOTING.md   # Known issues, fixes, debugging tips
+├── build/                   # Build output (gitignored)
 ├── config.example.yaml      # Example configuration
 ├── go.mod
-├── Makefile
+├── Makefile                 # Cross-platform build system
 └── README.md
 ```
 
@@ -472,6 +512,11 @@ anthropic-proxy/
 | Ollama | ✅ Should work |
 | OpenAI | ✅ Should work |
 | Any OpenAI-compatible | ✅ Should work |
+
+## Documentation
+
+- [Architecture](docs/ARCHITECTURE.md) — how the proxy works, translation patterns, data flow
+- [Troubleshooting](docs/TROUBLESHOOTING.md) — known issues, fixes, debugging tips
 
 ## License
 

@@ -41,7 +41,11 @@ func TranslateResponsesRequest(req *types.ResponsesRequest, prevMessages []types
 	oai.Messages = append(oai.Messages, translateResponsesInput(req.Input)...)
 
 	// Tools (flat → nested function wrapper)
+	// Skip non-function tools (web_search, bash, etc.) as they have no Chat Completions equivalent
 	for _, t := range req.Tools {
+		if t.Type != "function" || t.Name == "" {
+			continue
+		}
 		oai.Tools = append(oai.Tools, types.OpenAITool{
 			Type: "function",
 			Function: types.ToolFunction{
@@ -171,7 +175,7 @@ func translateMessageContentBlocks(role string, blocks []interface{}) []types.Op
 		blockType, _ := b["type"].(string)
 
 		switch blockType {
-		case "input_text":
+		case "input_text", "output_text":
 			text, _ := b["text"].(string)
 			if text != "" {
 				contentParts = append(contentParts, map[string]interface{}{
@@ -338,18 +342,26 @@ func TranslateResponsesResponse(resp *types.OpenAIResponse, requestID string) *t
 		}
 
 		// Text content → message output item
+		// Fall back to reasoning_content if content is empty (reasoning models)
+		text := ""
 		if ch.Message.Content != nil {
-			if text, ok := ch.Message.Content.(string); ok && text != "" {
-				ar.Output = append(ar.Output, types.ResponseOutputItem{
-					Type:   "message",
-					ID:     fmt.Sprintf("msg_%s", requestID),
-					Role:   "assistant",
-					Status: "completed",
-					Content: []types.OutputContentBlock{
-						{Type: "output_text", Text: text},
-					},
-				})
+			if t, ok := ch.Message.Content.(string); ok {
+				text = t
 			}
+		}
+		if text == "" && ch.Message.ReasoningContent != "" {
+			text = ch.Message.ReasoningContent
+		}
+		if text != "" {
+			ar.Output = append(ar.Output, types.ResponseOutputItem{
+				Type:   "message",
+				ID:     fmt.Sprintf("msg_%s", requestID),
+				Role:   "assistant",
+				Status: "completed",
+				Content: []types.OutputContentBlock{
+					{Type: "output_text", Text: text},
+				},
+			})
 		}
 	}
 
