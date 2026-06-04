@@ -16,6 +16,7 @@ func TranslateRequest(req *types.AnthropicRequest) (*types.OpenAIRequest, bool) 
 		MaxTokens:   req.MaxTokens,
 		Temperature: req.Temperature,
 		TopP:        req.TopP,
+		TopK:        req.TopK,
 		Stream:      req.Stream,
 	}
 	if req.Stream {
@@ -28,6 +29,15 @@ func TranslateRequest(req *types.AnthropicRequest) (*types.OpenAIRequest, bool) 
 	thinkingEnabled := true
 	if req.Thinking != nil && req.Thinking.Type == "disabled" {
 		thinkingEnabled = false
+	}
+
+	// When thinking is enabled with budget_tokens, ensure max_tokens is sufficient.
+	// Anthropic requires max_tokens > budget_tokens.
+	if thinkingEnabled && req.Thinking != nil && req.Thinking.BudgetTokens != nil {
+		budget := *req.Thinking.BudgetTokens
+		if oai.MaxTokens <= budget {
+			oai.MaxTokens = budget + 1
+		}
 	}
 
 	// System → system message
@@ -55,6 +65,16 @@ func TranslateRequest(req *types.AnthropicRequest) (*types.OpenAIRequest, bool) 
 				Parameters:  t.InputSchema,
 			},
 		})
+	}
+
+	// Tool choice
+	if req.ToolChoice != nil {
+		oai.ToolChoice = translateToolChoice(req.ToolChoice)
+	}
+
+	// Metadata → user
+	if req.Metadata != nil && req.Metadata.UserID != "" {
+		oai.User = req.Metadata.UserID
 	}
 
 	return oai, thinkingEnabled
@@ -163,4 +183,35 @@ func translateMessages(msg types.AnthropicMsg) []types.OpenAIMsg {
 	}
 
 	return result
+}
+
+// translateToolChoice converts Anthropic tool_choice to OpenAI tool_choice format.
+//
+// Anthropic formats:
+//
+//	{"type": "auto"}                             → "auto"
+//	{"type": "any"}                              → "required"
+//	{"type": "tool", "name": "get_weather"}      → {"type": "function", "function": {"name": "get_weather"}}
+//	{"type": "none"}                             → "none"
+func translateToolChoice(tc interface{}) interface{} {
+	m, ok := tc.(map[string]interface{})
+	if !ok {
+		return tc
+	}
+	switch m["type"] {
+	case "auto":
+		return "auto"
+	case "any":
+		return "required"
+	case "none":
+		return "none"
+	case "tool":
+		if name, ok := m["name"].(string); ok {
+			return map[string]interface{}{
+				"type":     "function",
+				"function": map[string]string{"name": name},
+			}
+		}
+	}
+	return tc
 }

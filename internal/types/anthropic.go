@@ -5,21 +5,28 @@ package types
 // ============================================================
 
 type AnthropicRequest struct {
-	Model         string          `json:"model"`
-	MaxTokens     int             `json:"max_tokens"`
-	Messages      []AnthropicMsg  `json:"messages"`
-	System        interface{}     `json:"system,omitempty"`
-	Stream        bool            `json:"stream,omitempty"`
-	Temperature   *float64        `json:"temperature,omitempty"`
-	TopP          *float64        `json:"top_p,omitempty"`
-	StopSequences []string        `json:"stop_sequences,omitempty"`
-	Tools         []AnthropicTool `json:"tools,omitempty"`
-	ToolChoice    interface{}     `json:"tool_choice,omitempty"`
-	Thinking      *ThinkingConfig `json:"thinking,omitempty"`
+	Model         string             `json:"model"`
+	MaxTokens     int                `json:"max_tokens"`
+	Messages      []AnthropicMsg     `json:"messages"`
+	System        interface{}        `json:"system,omitempty"`
+	Stream        bool               `json:"stream,omitempty"`
+	Temperature   *float64           `json:"temperature,omitempty"`
+	TopP          *float64           `json:"top_p,omitempty"`
+	TopK          *int               `json:"top_k,omitempty"`
+	StopSequences []string           `json:"stop_sequences,omitempty"`
+	Tools         []AnthropicTool    `json:"tools,omitempty"`
+	ToolChoice    interface{}        `json:"tool_choice,omitempty"`
+	Thinking      *ThinkingConfig    `json:"thinking,omitempty"`
+	Metadata      *AnthropicMetadata `json:"metadata,omitempty"`
 }
 
 type ThinkingConfig struct {
-	Type string `json:"type"` // "enabled" or "disabled"
+	Type         string `json:"type"`                    // "enabled", "disabled", or "adaptive"
+	BudgetTokens *int   `json:"budget_tokens,omitempty"` // required when type="enabled"
+}
+
+type AnthropicMetadata struct {
+	UserID string `json:"user_id,omitempty"`
 }
 
 type AnthropicMsg struct {
@@ -61,8 +68,10 @@ type AnthropicResponse struct {
 }
 
 type AnthropicUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
 }
 
 // Anthropic SSE event types

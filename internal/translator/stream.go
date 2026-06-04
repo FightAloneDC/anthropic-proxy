@@ -165,6 +165,12 @@ func (st *StreamTranslator) emitMessageDelta(stopReason string, usage *types.Ope
 	u := types.AnthropicUsage{}
 	if usage != nil {
 		u.OutputTokens = usage.CompletionTokens
+		if usage.PromptCacheHitTokens != nil {
+			u.CacheReadInputTokens = *usage.PromptCacheHitTokens
+		}
+		if usage.PromptCacheMissTokens != nil {
+			u.CacheCreationInputTokens = *usage.PromptCacheMissTokens
+		}
 	}
 	st.emit("message_delta", types.EventMessageDelta{
 		Type:  "message_delta",

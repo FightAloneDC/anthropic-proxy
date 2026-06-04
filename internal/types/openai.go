@@ -10,10 +10,13 @@ type OpenAIRequest struct {
 	MaxTokens     int            `json:"max_tokens,omitempty"`
 	Temperature   *float64       `json:"temperature,omitempty"`
 	TopP          *float64       `json:"top_p,omitempty"`
+	TopK          *int           `json:"top_k,omitempty"`
 	Stream        bool           `json:"stream,omitempty"`
 	StreamOptions *StreamOptions `json:"stream_options,omitempty"`
 	Stop          interface{}    `json:"stop,omitempty"`
 	Tools         []OpenAITool   `json:"tools,omitempty"`
+	ToolChoice    interface{}    `json:"tool_choice,omitempty"`
+	User          string         `json:"user,omitempty"`
 }
 
 type StreamOptions struct {
@@ -66,9 +69,11 @@ type Choice struct {
 }
 
 type OpenAIUsage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens        int `json:"prompt_tokens"`
+	CompletionTokens    int `json:"completion_tokens"`
+	TotalTokens         int `json:"total_tokens"`
+	PromptCacheHitTokens  *int `json:"prompt_cache_hit_tokens,omitempty"`
+	PromptCacheMissTokens *int `json:"prompt_cache_miss_tokens,omitempty"`
 }
 
 // OpenAI streaming chunk

@@ -32,15 +32,22 @@ func New(cfg *config.Config) *Handler {
 	}
 }
 
-// ModelsHandler handles GET /v1/models
+// ModelsHandler handles GET /anthropic/v1/models
 func (h *Handler) ModelsHandler(w http.ResponseWriter, r *http.Request) {
+	if h.cfg.Proxy.Debug {
+		apiKey := r.Header.Get("X-Api-Key")
+		log.Printf("← %s %s x-api-key=%s", r.Method, r.URL.Path, maskKey(apiKey))
+	}
+
 	base := strings.TrimRight(h.cfg.Backend.URL, "/")
 	if strings.HasSuffix(base, "/v1") {
 		base = base[:len(base)-3]
 	}
 	modelsURL := base + "/v1/models"
 
-	log.Printf("→ GET %s", modelsURL)
+	if h.cfg.Proxy.Debug {
+		log.Printf("→ GET %s", modelsURL)
+	}
 
 	proxyReq, err := http.NewRequest("GET", modelsURL, nil)
 	if err != nil {
@@ -70,11 +77,19 @@ func (h *Handler) ModelsHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write(body)
 }
 
-// MessagesHandler handles POST /v1/messages
+// MessagesHandler handles POST /anthropic/v1/messages
 func (h *Handler) MessagesHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, `{"type":"error","error":{"type":"invalid_request_error","message":"method not allowed"}}`, http.StatusMethodNotAllowed)
 		return
+	}
+
+	// Read Anthropic-specific headers
+	apiKey := r.Header.Get("X-Api-Key")
+	anthropicVersion := r.Header.Get("anthropic-version")
+
+	if h.cfg.Proxy.Debug {
+		log.Printf("← %s %s x-api-key=%s anthropic-version=%s", r.Method, r.URL.Path, maskKey(apiKey), anthropicVersion)
 	}
 
 	body, err := io.ReadAll(r.Body)
@@ -140,10 +155,21 @@ func (h *Handler) MessagesHandler(w http.ResponseWriter, r *http.Request) {
 
 	if anthropicReq.Stream {
 		shouldSkipThinking := h.cfg.Proxy.SkipThinking || !thinkingEnabled
-		h.streamResponse(w, resp, shouldSkipThinking)
+		h.streamResponse(w, resp, anthropicVersion, shouldSkipThinking)
 	} else {
-		h.nonStreamResponse(w, resp)
+		h.nonStreamResponse(w, resp, anthropicVersion)
 	}
+}
+
+// maskKey returns a masked version of an API key for logging
+func maskKey(key string) string {
+	if key == "" {
+		return "(none)"
+	}
+	if len(key) <= 8 {
+		return "***"
+	}
+	return key[:4] + "..." + key[len(key)-4:]
 }
 
 func writeError(w http.ResponseWriter, status int, errType, message string) {
@@ -155,7 +181,7 @@ func writeError(w http.ResponseWriter, status int, errType, message string) {
 	})
 }
 
-func (h *Handler) nonStreamResponse(w http.ResponseWriter, resp *http.Response) {
+func (h *Handler) nonStreamResponse(w http.ResponseWriter, resp *http.Response, anthropicVersion string) {
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "api_error", "failed to read backend response")
@@ -174,12 +200,16 @@ func (h *Handler) nonStreamResponse(w http.ResponseWriter, resp *http.Response) 
 	anthropicResp := translator.TranslateResponse(&openaiResp)
 
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("anthropic-version", "2023-06-01")
+	if anthropicVersion != "" {
+		w.Header().Set("anthropic-version", anthropicVersion)
+	} else {
+		w.Header().Set("anthropic-version", "2023-06-01")
+	}
 	w.Header().Set("request-id", fmt.Sprintf("req-%d", time.Now().UnixNano()))
 	json.NewEncoder(w).Encode(anthropicResp)
 }
 
-func (h *Handler) streamResponse(w http.ResponseWriter, resp *http.Response, skipThinking bool) {
+func (h *Handler) streamResponse(w http.ResponseWriter, resp *http.Response, anthropicVersion string, skipThinking bool) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, "api_error", "streaming not supported")
@@ -189,7 +219,11 @@ func (h *Handler) streamResponse(w http.ResponseWriter, resp *http.Response, ski
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("anthropic-version", "2023-06-01")
+	if anthropicVersion != "" {
+		w.Header().Set("anthropic-version", anthropicVersion)
+	} else {
+		w.Header().Set("anthropic-version", "2023-06-01")
+	}
 	w.Header().Set("request-id", fmt.Sprintf("req-%d", time.Now().UnixNano()))
 
 	// Ratelimit headers (dummy values)

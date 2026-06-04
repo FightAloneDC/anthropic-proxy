@@ -48,6 +48,13 @@ func TranslateResponse(resp *types.OpenAIResponse) *types.AnthropicResponse {
 			InputTokens:  resp.Usage.PromptTokens,
 			OutputTokens: resp.Usage.CompletionTokens,
 		}
+		// Map cache token fields if present (e.g. from vLLM backends)
+		if resp.Usage.PromptCacheHitTokens != nil {
+			ar.Usage.CacheReadInputTokens = *resp.Usage.PromptCacheHitTokens
+		}
+		if resp.Usage.PromptCacheMissTokens != nil {
+			ar.Usage.CacheCreationInputTokens = *resp.Usage.PromptCacheMissTokens
+		}
 	}
 
 	return ar
