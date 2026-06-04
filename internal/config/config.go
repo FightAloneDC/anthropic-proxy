@@ -31,8 +31,10 @@ type BackendConfig struct {
 
 // ProxyConfig holds proxy behavior settings
 type ProxyConfig struct {
-	SkipThinking bool `yaml:"skip_thinking"`
-	Debug        bool `yaml:"debug"`
+	SkipThinking    bool `yaml:"skip_thinking"`
+	Debug           bool `yaml:"debug"`
+	StoreTTL        int  `yaml:"store_ttl"`         // seconds, default 3600
+	StoreMaxEntries int  `yaml:"store_max_entries"`  // default 1000
 }
 
 // ModelMap represents a single model mapping

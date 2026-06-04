@@ -5,18 +5,19 @@ package types
 // ============================================================
 
 type OpenAIRequest struct {
-	Model         string         `json:"model"`
-	Messages      []OpenAIMsg    `json:"messages"`
-	MaxTokens     int            `json:"max_tokens,omitempty"`
-	Temperature   *float64       `json:"temperature,omitempty"`
-	TopP          *float64       `json:"top_p,omitempty"`
-	TopK          *int           `json:"top_k,omitempty"`
-	Stream        bool           `json:"stream,omitempty"`
-	StreamOptions *StreamOptions `json:"stream_options,omitempty"`
-	Stop          interface{}    `json:"stop,omitempty"`
-	Tools         []OpenAITool   `json:"tools,omitempty"`
-	ToolChoice    interface{}    `json:"tool_choice,omitempty"`
-	User          string         `json:"user,omitempty"`
+	Model          string         `json:"model"`
+	Messages       []OpenAIMsg    `json:"messages"`
+	MaxTokens      int            `json:"max_tokens,omitempty"`
+	Temperature    *float64       `json:"temperature,omitempty"`
+	TopP           *float64       `json:"top_p,omitempty"`
+	TopK           *int           `json:"top_k,omitempty"`
+	Stream         bool           `json:"stream,omitempty"`
+	StreamOptions  *StreamOptions `json:"stream_options,omitempty"`
+	Stop           interface{}    `json:"stop,omitempty"`
+	Tools          []OpenAITool   `json:"tools,omitempty"`
+	ToolChoice     interface{}    `json:"tool_choice,omitempty"`
+	User           string         `json:"user,omitempty"`
+	ResponseFormat interface{}    `json:"response_format,omitempty"`
 }
 
 type StreamOptions struct {

@@ -5,10 +5,12 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"anthropic-proxy/internal/config"
 	"anthropic-proxy/internal/daemon"
 	"anthropic-proxy/internal/handler"
+	"anthropic-proxy/internal/store"
 )
 
 const usage = `Usage: anthropic-proxy <command> [flags]
@@ -105,6 +107,18 @@ func runServer(cfg *config.Config) {
 		daemon.WritePIDFile()
 	}
 
+	// Create response store for previous_response_id support
+	ttl := time.Duration(cfg.Proxy.StoreTTL) * time.Second
+	if ttl <= 0 {
+		ttl = 1 * time.Hour
+	}
+	maxEntries := cfg.Proxy.StoreMaxEntries
+	if maxEntries <= 0 {
+		maxEntries = 1000
+	}
+	responseStore := store.New(ttl, maxEntries)
+	log.Printf("Response store: TTL=%v, maxEntries=%d", ttl, maxEntries)
+
 	// Log model mappings
 	modelMap := cfg.GetModelMap()
 	if len(modelMap) > 0 {
@@ -115,11 +129,16 @@ func runServer(cfg *config.Config) {
 	}
 
 	// Create handler
-	h := handler.New(cfg)
+	h := handler.New(cfg, responseStore)
 
 	// Register routes — Anthropic
 	http.HandleFunc("/anthropic/v1/messages", h.MessagesHandler)
 	http.HandleFunc("/anthropic/v1/models", h.ModelsHandler)
+
+	// Register routes — OpenAI
+	http.HandleFunc("/openai/v1/responses", h.ResponsesHandler)
+	http.HandleFunc("/openai/v1/chat/completions", h.ChatCompletionsHandler)
+	http.HandleFunc("/openai/v1/models", h.ModelsHandler)
 
 	// Start server
 	log.Printf("anthropic-proxy listening on :%d → %s", cfg.Server.Port, cfg.Backend.URL)

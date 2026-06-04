@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"anthropic-proxy/internal/config"
+	"anthropic-proxy/internal/store"
 	"anthropic-proxy/internal/translator"
 	"anthropic-proxy/internal/types"
 )
@@ -20,15 +21,15 @@ import (
 type Handler struct {
 	cfg    *config.Config
 	client *http.Client
+	store  *store.ResponseStore
 }
 
 // New creates a new Handler instance
-func New(cfg *config.Config) *Handler {
+func New(cfg *config.Config, s *store.ResponseStore) *Handler {
 	return &Handler{
-		cfg: cfg,
-		client: &http.Client{
-			Timeout: 5 * time.Minute,
-		},
+		cfg:    cfg,
+		client: &http.Client{Timeout: 5 * time.Minute},
+		store:  s,
 	}
 }
 
@@ -271,5 +272,271 @@ func (h *Handler) streamResponse(w http.ResponseWriter, resp *http.Response, ant
 
 	if err := scanner.Err(); err != nil {
 		log.Printf("stream read error: %v", err)
+	}
+}
+
+// ============================================================
+// OpenAI Responses API handlers
+// ============================================================
+
+// ResponsesHandler handles POST /openai/v1/responses
+func (h *Handler) ResponsesHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeResponsesError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		return
+	}
+
+	if h.cfg.Proxy.Debug {
+		log.Printf("← %s %s", r.Method, r.URL.Path)
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeResponsesError(w, http.StatusBadRequest, "invalid_request_error", "failed to read body")
+		return
+	}
+	defer r.Body.Close()
+
+	var responsesReq types.ResponsesRequest
+	if err := json.Unmarshal(body, &responsesReq); err != nil {
+		writeResponsesError(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON: "+err.Error())
+		return
+	}
+
+	// Handle previous_response_id
+	var prevMessages []types.OpenAIMsg
+	if responsesReq.PreviousResponseID != "" {
+		if prev, ok := h.store.Get(responsesReq.PreviousResponseID); ok {
+			prevMessages = translator.StoredResponseToMessages(prev)
+		} else {
+			writeResponsesError(w, http.StatusNotFound, "not_found", "previous response not found: "+responsesReq.PreviousResponseID)
+			return
+		}
+	}
+
+	// Apply model mapping
+	modelMap := h.cfg.GetModelMap()
+	if mapped, ok := modelMap[responsesReq.Model]; ok {
+		if h.cfg.Proxy.Debug {
+			log.Printf("Model mapping: %s → %s", responsesReq.Model, mapped)
+		}
+		responsesReq.Model = mapped
+	}
+
+	responseID := translator.GenerateResponseID()
+	openaiReq, _ := translator.TranslateResponsesRequest(&responsesReq, prevMessages)
+
+	base := strings.TrimRight(h.cfg.Backend.URL, "/")
+	if strings.HasSuffix(base, "/v1") {
+		base = base[:len(base)-3]
+	}
+	targetURL := base + "/v1/chat/completions"
+
+	reqBody, _ := json.Marshal(openaiReq)
+	if h.cfg.Proxy.Debug {
+		log.Printf("→ POST %s model=%s stream=%v", targetURL, openaiReq.Model, openaiReq.Stream)
+	}
+
+	proxyReq, err := http.NewRequest("POST", targetURL, bytes.NewReader(reqBody))
+	if err != nil {
+		writeResponsesError(w, http.StatusInternalServerError, "api_error", err.Error())
+		return
+	}
+	proxyReq.Header.Set("Content-Type", "application/json")
+
+	if h.cfg.Backend.APIKey != "" {
+		proxyReq.Header.Set("Authorization", "Bearer "+h.cfg.Backend.APIKey)
+	}
+
+	resp, err := h.client.Do(proxyReq)
+	if err != nil {
+		writeResponsesError(w, http.StatusBadGateway, "api_error", "backend error: "+err.Error())
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(resp.StatusCode)
+		io.Copy(w, resp.Body)
+		return
+	}
+
+	if responsesReq.Stream {
+		h.responsesStreamResponse(w, resp, responseID)
+	} else {
+		h.responsesNonStreamResponse(w, resp, responseID)
+	}
+}
+
+func (h *Handler) responsesNonStreamResponse(w http.ResponseWriter, resp *http.Response, responseID string) {
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		writeResponsesError(w, http.StatusBadGateway, "api_error", "failed to read backend response")
+		return
+	}
+	body = bytes.TrimSpace(body)
+
+	var openaiResp types.OpenAIResponse
+	if err := json.Unmarshal(body, &openaiResp); err != nil {
+		writeResponsesError(w, http.StatusBadGateway, "api_error", "failed to parse backend response")
+		return
+	}
+
+	responsesResp := translator.TranslateResponsesResponse(&openaiResp, responseID)
+
+	// Store for previous_response_id support
+	h.store.Store(responseID, responsesResp)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("x-request-id", responseID)
+	json.NewEncoder(w).Encode(responsesResp)
+}
+
+func (h *Handler) responsesStreamResponse(w http.ResponseWriter, resp *http.Response, responseID string) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeResponsesError(w, http.StatusInternalServerError, "api_error", "streaming not supported")
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("x-request-id", responseID)
+
+	emit := func(event string, data interface{}) {
+		j, _ := json.Marshal(data)
+		if h.cfg.Proxy.Debug {
+			log.Printf("← SSE event=%s data=%s", event, string(j))
+		}
+		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, string(j))
+		flusher.Flush()
+	}
+
+	streamTranslator := translator.NewResponsesStreamTranslator(emit, responseID)
+
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "[DONE]" {
+			break
+		}
+
+		var chunk types.OpenAIChunk
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			log.Printf("skip unparseable chunk: %v", err)
+			continue
+		}
+		streamTranslator.ProcessChunk(&chunk)
+	}
+
+	if err := scanner.Err(); err != nil {
+		log.Printf("stream read error: %v", err)
+	}
+}
+
+func writeResponsesError(w http.ResponseWriter, status int, errType, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"type":  "error",
+		"error": map[string]string{"type": errType, "message": message},
+	})
+}
+
+// ============================================================
+// OpenAI Chat Completions direct forward
+// ============================================================
+
+// ChatCompletionsHandler handles POST /openai/v1/chat/completions — direct forward to backend.
+func (h *Handler) ChatCompletionsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":{"message":"method not allowed","type":"invalid_request_error"}}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	if h.cfg.Proxy.Debug {
+		log.Printf("← %s %s (direct forward)", r.Method, r.URL.Path)
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]interface{}{"error": map[string]string{"message": "failed to read body"}})
+		return
+	}
+	defer r.Body.Close()
+
+	base := strings.TrimRight(h.cfg.Backend.URL, "/")
+	if strings.HasSuffix(base, "/v1") {
+		base = base[:len(base)-3]
+	}
+	targetURL := base + "/v1/chat/completions"
+
+	// Parse to check stream flag
+	var reqCheck struct {
+		Stream bool `json:"stream"`
+	}
+	json.Unmarshal(body, &reqCheck)
+
+	if h.cfg.Proxy.Debug {
+		log.Printf("→ POST %s stream=%v", targetURL, reqCheck.Stream)
+	}
+
+	proxyReq, err := http.NewRequest("POST", targetURL, bytes.NewReader(body))
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]interface{}{"error": map[string]string{"message": err.Error()}})
+		return
+	}
+	proxyReq.Header.Set("Content-Type", "application/json")
+
+	if h.cfg.Backend.APIKey != "" {
+		proxyReq.Header.Set("Authorization", "Bearer "+h.cfg.Backend.APIKey)
+	}
+
+	resp, err := h.client.Do(proxyReq)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadGateway)
+		json.NewEncoder(w).Encode(map[string]interface{}{"error": map[string]string{"message": "backend error: " + err.Error()}})
+		return
+	}
+	defer resp.Body.Close()
+
+	// Copy response headers
+	for key, values := range resp.Header {
+		for _, value := range values {
+			w.Header().Add(key, value)
+		}
+	}
+	w.WriteHeader(resp.StatusCode)
+
+	if reqCheck.Stream {
+		// Stream SSE passthrough
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			return
+		}
+		scanner := bufio.NewScanner(resp.Body)
+		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		for scanner.Scan() {
+			line := scanner.Text()
+			fmt.Fprintf(w, "%s\n", line)
+			if line == "" {
+				flusher.Flush()
+			}
+		}
+	} else {
+		io.Copy(w, resp.Body)
 	}
 }
