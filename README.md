@@ -517,6 +517,7 @@ anthropic-proxy/
 
 - [Architecture](docs/ARCHITECTURE.md) — how the proxy works, translation patterns, data flow
 - [Troubleshooting](docs/TROUBLESHOOTING.md) — known issues, fixes, debugging tips
+- [Roadmap](docs/ROADMAP.md) — future development plan, features, milestones
 
 ## License
 
