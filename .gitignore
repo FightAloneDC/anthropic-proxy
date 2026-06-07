@@ -50,9 +50,10 @@ Thumbs.db
 desktop.ini
 
 #-------------------------
-# Claude Code
+# Agent tooling
 #-------------------------
 .claude/
+.qwen/
 
 #-------------------------
 # Development Folders

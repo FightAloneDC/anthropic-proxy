@@ -31,6 +31,9 @@ The proxy is a **universal translator** between three API formats:
 ┌─────────────────────┐         │
 │  OpenAI Responses   │──→ /openai/v1/responses
 │  SDK / Codex        │
+└─────────────────────┘         │
+┌─────────────────────┐         │
+│  Gemini SDK / API   │──→ /gemini/v1beta/models/{model}:generateContent
 └─────────────────────┘
 ```
 
@@ -47,6 +50,15 @@ The proxy is a **universal translator** between three API formats:
 /openai/v1/responses          → translate to chat/completions
 /openai/v1/chat/completions   → direct forward to backend
 /openai/v1/models             → direct forward to backend
+/openai/v1/embeddings         → direct forward to backend
+/openai/v1/rerank             → direct forward to backend
+/openai/v1/audio/speech       → direct forward to backend
+/openai/v1/audio/transcriptions → direct forward to backend
+/openai/v1/images/generations → direct forward to backend
+
+/gemini/v1beta/models/{model}:generateContent        → translate to chat/completions
+/gemini/v1beta/models/{model}:streamGenerateContent  → translate to chat/completions
+/gemini/v1beta/models/{model}:embedContent           → translate to embeddings
 ```
 
 **Naming convention:** `/{provider}/v1/{endpoint}`
@@ -54,6 +66,7 @@ The proxy is a **universal translator** between three API formats:
 SDK configuration:
 - Anthropic SDK: `base_url = "http://host:port/anthropic"`
 - OpenAI SDK: `base_url = "http://host:port/openai"`
+- Gemini API root: `http://host:port/gemini`
 
 ---
 
@@ -127,6 +140,64 @@ For streaming, the `ResponsesStreamTranslator` converts chunks:
 4. delta.reasoning → response.reasoning_text.delta event
 5. Finish → response.output_text.done + response.output_item.done + response.completed events
 ```
+
+### Gemini generateContent → Chat Completions
+
+```
+1. Parse model and action from /gemini/v1beta/models/{model}:generateContent
+2. Parse GeminiRequest
+3. Model mapping
+4. TranslateGeminiRequest() → OpenAIRequest
+   - systemInstruction → messages[0] with role:"system"
+   - contents[].role user/model → user/assistant messages
+   - parts[].text → text content
+   - parts[].inlineData/fileData → image_url content
+   - functionDeclarations → tools[]
+   - generationConfig → max_tokens, temperature, top_p, top_k, stop
+   - safetySettings → accepted but ignored
+5. Forward to backend /v1/chat/completions
+6. TranslateGeminiResponse() → GeminiResponse (or GeminiStreamTranslator for SSE)
+```
+
+### Chat Completions → Gemini
+
+```
+1. OpenAIResponse → GeminiResponse
+   - choices[].message.content → candidates[].content.parts[].text
+   - choices[].message.tool_calls → candidates[].content.parts[].functionCall
+   - finish_reason → finishReason (stop/tool_calls→STOP, length→MAX_TOKENS)
+   - usage → usageMetadata
+2. For streaming: GeminiStreamTranslator processes each chunk
+   - delta.content → Gemini SSE data candidate with text part
+   - delta.tool_calls → accumulated functionCall part
+   - usage-only chunks → usageMetadata-only event
+```
+
+### Gemini embedContent → OpenAI Embeddings
+
+```
+1. Parse model from /gemini/v1beta/models/{model}:embedContent
+2. Parse GeminiEmbedContentRequest
+3. Model mapping
+4. TranslateGeminiEmbedContentRequest() → OpenAIEmbeddingsRequest
+   - content.parts[].text → input
+   - outputDimensionality → dimensions
+   - taskType/title → accepted but ignored
+5. Forward to backend /v1/embeddings
+6. TranslateGeminiEmbedContentResponse() → GeminiEmbedContentResponse
+```
+
+### OpenAI-compatible multi-modal direct forward
+
+```
+1. Match /openai/v1/{multimodal-endpoint}
+2. Build backend /v1/{multimodal-endpoint} URL
+3. Preserve request body and selected headers
+4. Replace Authorization with configured backend API key
+5. Copy backend status, headers, and response body
+```
+
+Direct-forward endpoints intentionally avoid JSON parsing so multipart uploads and binary responses keep their backend-native behavior.
 
 ---
 
@@ -251,7 +322,8 @@ internal/
 │   ├── stop.go             # Stop/status
 │   └── stop_unix.go        # Unix kill
 ├── handler/
-│   └── handler.go          # HTTP handlers (MessagesHandler, ResponsesHandler, etc.)
+│   ├── handler.go          # HTTP handlers for translated endpoints
+│   └── forward.go          # Direct-forward handlers
 ├── store/
 │   └── store.go            # In-memory response store
 ├── translator/
@@ -259,17 +331,23 @@ internal/
 │   ├── response.go         # Chat Completions → Anthropic response
 │   ├── stream.go           # Chat Completions SSE → Anthropic SSE
 │   ├── responses.go        # Responses ↔ Chat Completions translator
-│   └── responses_stream.go # Responses SSE stream translator
+│   ├── responses_stream.go # Responses SSE stream translator
+│   ├── gemini_request.go   # Gemini → Chat Completions request
+│   ├── gemini_response.go  # Chat Completions → Gemini response
+│   ├── gemini_stream.go    # Chat Completions SSE → Gemini SSE
+│   └── gemini_embeddings.go # Gemini embedContent ↔ OpenAI Embeddings
 └── types/
     ├── anthropic.go        # Anthropic API types
     ├── openai.go           # OpenAI Chat Completions types
-    └── responses.go        # OpenAI Responses API types
+    ├── responses.go        # OpenAI Responses API types
+    ├── gemini.go           # Gemini API types
+    └── embeddings.go       # OpenAI Embeddings API types
 ```
 
 ### Conventions
 
-- **Types:** `Anthropic` prefix for Anthropic types, `OpenAI` prefix for Chat Completions, no prefix for Responses types (in `responses.go`)
+- **Types:** `Anthropic`, `OpenAI`, `Responses`, and `Gemini` prefixes identify external API formats
 - **Polymorphic fields:** Use `interface{}` with type switches at translation time
 - **No third-party deps:** Only `gopkg.in/yaml.v3` for config
 - **Standard library HTTP:** No router framework, just `net/http`
-- **Error format:** Anthropic-style `{"type":"error","error":{"type":"...","message":"..."}}` for all endpoints
+- **Error format:** Each translated endpoint returns the closest client-facing error envelope for its API format

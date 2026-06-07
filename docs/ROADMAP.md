@@ -2,12 +2,15 @@
 
 Development plan for anthropic-proxy — features, improvements, and milestones.
 
-## Current State (v2.2.0)
+## Current State (v2.4.0)
 
 - ✅ Anthropic Messages API → Chat Completions translation
 - ✅ OpenAI Responses API → Chat Completions translation
+- ✅ Gemini generateContent API → Chat Completions translation
+- ✅ Gemini embedContent API → OpenAI Embeddings translation
+- ✅ OpenAI-compatible multi-modal direct forwarding
 - ✅ Direct forward (Chat Completions)
-- ✅ Streaming (SSE) for all endpoints
+- ✅ Streaming (SSE) for all translated endpoints
 - ✅ Tool calling (bidirectional)
 - ✅ Reasoning/thinking blocks
 - ✅ Model mapping
@@ -18,7 +21,7 @@ Development plan for anthropic-proxy — features, improvements, and milestones.
 
 ---
 
-## v2.3.0 — Gemini API Support
+## v2.3.0 — Gemini API Support ✅ Completed
 
 **Priority: High**
 
@@ -37,7 +40,7 @@ Development plan for anthropic-proxy — features, improvements, and milestones.
 - `contents[]` → messages[]
 - `tools[]` (Gemini function declarations) → Chat Completions tools
 - `generationConfig` (temperature, topP, topK, maxOutputTokens) → Chat Completions params
-- `safetySettings` — pass through or map
+- `safetySettings` — accepted but ignored because Chat Completions has no direct equivalent
 
 ### Route Structure (Updated)
 ```
@@ -54,7 +57,7 @@ Development plan for anthropic-proxy — features, improvements, and milestones.
 
 ---
 
-## v2.4.0 — Multi-Modal Proxy
+## v2.4.0 — Multi-Modal Proxy ✅ Completed
 
 **Priority: High**
 

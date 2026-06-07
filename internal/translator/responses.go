@@ -186,6 +186,9 @@ func translateMessageContentBlocks(role string, blocks []interface{}) []types.Op
 
 		case "input_image":
 			imageURL, _ := b["image_url"].(string)
+			if imageURL == "" {
+				imageURL, _ = b["file_data"].(string)
+			}
 			detail, _ := b["detail"].(string)
 			if imageURL != "" {
 				urlObj := map[string]string{"url": imageURL}
@@ -278,7 +281,7 @@ func translateResponsesToolChoice(tc interface{}) interface{} {
 		name, _ := v["name"].(string)
 		if tcType == "function" && name != "" {
 			return map[string]interface{}{
-				"type": "function",
+				"type":     "function",
 				"function": map[string]string{"name": name},
 			}
 		}

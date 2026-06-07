@@ -139,6 +139,14 @@ func runServer(cfg *config.Config) {
 	http.HandleFunc("/openai/v1/responses", h.ResponsesHandler)
 	http.HandleFunc("/openai/v1/chat/completions", h.ChatCompletionsHandler)
 	http.HandleFunc("/openai/v1/models", h.ModelsHandler)
+	http.HandleFunc("/openai/v1/embeddings", h.DirectForwardHandler("/v1/embeddings"))
+	http.HandleFunc("/openai/v1/rerank", h.DirectForwardHandler("/v1/rerank"))
+	http.HandleFunc("/openai/v1/audio/speech", h.DirectForwardHandler("/v1/audio/speech"))
+	http.HandleFunc("/openai/v1/audio/transcriptions", h.DirectForwardHandler("/v1/audio/transcriptions"))
+	http.HandleFunc("/openai/v1/images/generations", h.DirectForwardHandler("/v1/images/generations"))
+
+	// Register routes — Gemini
+	http.HandleFunc("/gemini/v1beta/models/", h.GeminiHandler)
 
 	// Start server
 	log.Printf("anthropic-proxy listening on :%d → %s", cfg.Server.Port, cfg.Backend.URL)

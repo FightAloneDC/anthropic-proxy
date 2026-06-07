@@ -540,3 +540,256 @@ func (h *Handler) ChatCompletionsHandler(w http.ResponseWriter, r *http.Request)
 		io.Copy(w, resp.Body)
 	}
 }
+
+// ============================================================
+// Gemini API handlers
+// ============================================================
+
+// GeminiHandler handles Gemini generateContent and streamGenerateContent requests.
+func (h *Handler) GeminiHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeGeminiError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	model, action, ok := parseGeminiPath(r.URL.Path)
+	if !ok {
+		writeGeminiError(w, http.StatusNotFound, "unknown Gemini endpoint")
+		return
+	}
+	stream := action == "streamGenerateContent"
+
+	if h.cfg.Proxy.Debug {
+		log.Printf("← %s %s model=%s action=%s", r.Method, r.URL.Path, model, action)
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeGeminiError(w, http.StatusBadRequest, "failed to read body")
+		return
+	}
+	defer r.Body.Close()
+
+	modelMap := h.cfg.GetModelMap()
+	if mapped, ok := modelMap[model]; ok {
+		if h.cfg.Proxy.Debug {
+			log.Printf("Model mapping: %s → %s", model, mapped)
+		}
+		model = mapped
+	}
+
+	if action == "embedContent" {
+		h.geminiEmbedContent(w, body, model)
+		return
+	}
+
+	var geminiReq types.GeminiRequest
+	if err := json.Unmarshal(body, &geminiReq); err != nil {
+		writeGeminiError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+
+	openaiReq := translator.TranslateGeminiRequest(&geminiReq, model, stream)
+
+	base := strings.TrimRight(h.cfg.Backend.URL, "/")
+	if strings.HasSuffix(base, "/v1") {
+		base = base[:len(base)-3]
+	}
+	targetURL := base + "/v1/chat/completions"
+
+	reqBody, _ := json.Marshal(openaiReq)
+	if h.cfg.Proxy.Debug {
+		log.Printf("→ POST %s model=%s stream=%v", targetURL, openaiReq.Model, openaiReq.Stream)
+	}
+
+	proxyReq, err := http.NewRequest("POST", targetURL, bytes.NewReader(reqBody))
+	if err != nil {
+		writeGeminiError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	proxyReq.Header.Set("Content-Type", "application/json")
+
+	if h.cfg.Backend.APIKey != "" {
+		proxyReq.Header.Set("Authorization", "Bearer "+h.cfg.Backend.APIKey)
+	}
+
+	resp, err := h.client.Do(proxyReq)
+	if err != nil {
+		writeGeminiError(w, http.StatusBadGateway, "backend error: "+err.Error())
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(resp.StatusCode)
+		io.Copy(w, resp.Body)
+		return
+	}
+
+	if stream {
+		h.geminiStreamResponse(w, resp)
+	} else {
+		h.geminiNonStreamResponse(w, resp)
+	}
+}
+
+func parseGeminiPath(path string) (string, string, bool) {
+	const prefix = "/gemini/v1beta/models/"
+	if !strings.HasPrefix(path, prefix) {
+		return "", "", false
+	}
+	suffix := strings.TrimPrefix(path, prefix)
+	for _, action := range []string{"generateContent", "streamGenerateContent", "embedContent"} {
+		marker := ":" + action
+		if strings.HasSuffix(suffix, marker) {
+			model := strings.TrimSuffix(suffix, marker)
+			return model, action, model != ""
+		}
+	}
+	return "", "", false
+}
+
+func (h *Handler) geminiEmbedContent(w http.ResponseWriter, body []byte, model string) {
+	var geminiReq types.GeminiEmbedContentRequest
+	if err := json.Unmarshal(body, &geminiReq); err != nil {
+		writeGeminiError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+
+	openaiReq := translator.TranslateGeminiEmbedContentRequest(&geminiReq, model)
+
+	base := strings.TrimRight(h.cfg.Backend.URL, "/")
+	if strings.HasSuffix(base, "/v1") {
+		base = base[:len(base)-3]
+	}
+	targetURL := base + "/v1/embeddings"
+
+	reqBody, _ := json.Marshal(openaiReq)
+	if h.cfg.Proxy.Debug {
+		log.Printf("→ POST %s model=%s", targetURL, openaiReq.Model)
+	}
+
+	proxyReq, err := http.NewRequest("POST", targetURL, bytes.NewReader(reqBody))
+	if err != nil {
+		writeGeminiError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	proxyReq.Header.Set("Content-Type", "application/json")
+
+	if h.cfg.Backend.APIKey != "" {
+		proxyReq.Header.Set("Authorization", "Bearer "+h.cfg.Backend.APIKey)
+	}
+
+	resp, err := h.client.Do(proxyReq)
+	if err != nil {
+		writeGeminiError(w, http.StatusBadGateway, "backend error: "+err.Error())
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(resp.StatusCode)
+		io.Copy(w, resp.Body)
+		return
+	}
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		writeGeminiError(w, http.StatusBadGateway, "failed to read backend response")
+		return
+	}
+	respBody = bytes.TrimSpace(respBody)
+
+	var openaiResp types.OpenAIEmbeddingsResponse
+	if err := json.Unmarshal(respBody, &openaiResp); err != nil {
+		writeGeminiError(w, http.StatusBadGateway, "failed to parse backend response")
+		return
+	}
+
+	geminiResp := translator.TranslateGeminiEmbedContentResponse(&openaiResp)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(geminiResp)
+}
+
+func (h *Handler) geminiNonStreamResponse(w http.ResponseWriter, resp *http.Response) {
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		writeGeminiError(w, http.StatusBadGateway, "failed to read backend response")
+		return
+	}
+	body = bytes.TrimSpace(body)
+
+	var openaiResp types.OpenAIResponse
+	if err := json.Unmarshal(body, &openaiResp); err != nil {
+		writeGeminiError(w, http.StatusBadGateway, "failed to parse backend response")
+		return
+	}
+
+	geminiResp := translator.TranslateGeminiResponse(&openaiResp)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(geminiResp)
+}
+
+func (h *Handler) geminiStreamResponse(w http.ResponseWriter, resp *http.Response) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeGeminiError(w, http.StatusInternalServerError, "streaming not supported")
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	emit := func(data interface{}) {
+		j, _ := json.Marshal(data)
+		if h.cfg.Proxy.Debug {
+			log.Printf("← Gemini SSE data=%s", string(j))
+		}
+		fmt.Fprintf(w, "data: %s\n\n", string(j))
+		flusher.Flush()
+	}
+
+	streamTranslator := translator.NewGeminiStreamTranslator(emit)
+
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "[DONE]" {
+			break
+		}
+
+		var chunk types.OpenAIChunk
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			log.Printf("skip unparseable chunk: %v", err)
+			continue
+		}
+		streamTranslator.ProcessChunk(&chunk)
+	}
+
+	if err := scanner.Err(); err != nil {
+		log.Printf("stream read error: %v", err)
+	}
+}
+
+func writeGeminiError(w http.ResponseWriter, status int, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"error": map[string]string{
+			"code":    fmt.Sprintf("%d", status),
+			"message": message,
+			"status":  http.StatusText(status),
+		},
+	})
+}

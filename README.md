@@ -1,18 +1,21 @@
 # anthropic-proxy 🔄
 
-Universal API translator proxy. Translates between **Anthropic Messages API**, **OpenAI Responses API**, and **OpenAI Chat Completions API** — allowing any Anthropic or OpenAI Responses SDK client to connect to any OpenAI-compatible backend.
+Universal API translator proxy. Translates between **Anthropic Messages API**, **OpenAI Responses API**, **Gemini generateContent API**, and **OpenAI Chat Completions API** — allowing Anthropic, OpenAI Responses, Gemini, or OpenAI Chat clients to connect to any OpenAI-compatible backend.
 
 ```
-Anthropic SDK        →  /anthropic/v1/messages      ─┐
-                                                      ├→  translate  →  backend /v1/chat/completions
-OpenAI Responses SDK →  /openai/v1/responses         ─┘
-OpenAI Chat SDK      →  /openai/v1/chat/completions  ──  direct forward
+Anthropic SDK        →  /anthropic/v1/messages                       ─┐
+OpenAI Responses SDK →  /openai/v1/responses                          ├→  translate  →  backend /v1/chat/completions
+Gemini SDK/API       →  /gemini/v1beta/models/{model}:generateContent ─┘
+OpenAI Chat SDK      →  /openai/v1/chat/completions                   ──  direct forward
 ```
 
 ## Features
 
 - **Anthropic Messages API** — full translation to/from Chat Completions
 - **OpenAI Responses API** — full translation to/from Chat Completions
+- **Gemini generateContent API** — translation to/from Chat Completions
+- **Gemini embedContent API** — translation to/from OpenAI Embeddings
+- **Multi-modal forwarding** — embeddings, rerank, speech, transcription, and image generation
 - **Direct forward** — `/openai/v1/chat/completions` pass-through
 - **Streaming** — SSE streaming for all endpoints
 - **Tool calling** — bidirectional function/tool translation
@@ -143,6 +146,14 @@ MODEL_MAP=claude-opus-4-8:your-model,claude-sonnet-4-6:your-model
 | `/openai/v1/responses` | POST | OpenAI Responses API (translated) |
 | `/openai/v1/chat/completions` | POST | OpenAI Chat Completions (direct forward) |
 | `/openai/v1/models` | GET | List models (forwarded to backend) |
+| `/openai/v1/embeddings` | POST | OpenAI Embeddings (direct forward) |
+| `/openai/v1/rerank` | POST | Rerank API (direct forward) |
+| `/openai/v1/audio/speech` | POST | Text-to-speech (direct forward) |
+| `/openai/v1/audio/transcriptions` | POST | Speech-to-text (direct forward) |
+| `/openai/v1/images/generations` | POST | Image generation (direct forward) |
+| `/gemini/v1beta/models/{model}:generateContent` | POST | Gemini generateContent API (translated) |
+| `/gemini/v1beta/models/{model}:streamGenerateContent` | POST | Gemini streaming generateContent API (translated) |
+| `/gemini/v1beta/models/{model}:embedContent` | POST | Gemini embedding API (translated) |
 
 ### SDK Configuration
 
@@ -180,6 +191,8 @@ response = client.chat.completions.create(
     messages=[{"role": "user", "content": "Hello!"}]
 )
 ```
+
+**Gemini API:** use `http://localhost:8006/gemini` as the API root. The proxy ignores the incoming client key and uses the configured backend key.
 
 ## API Examples
 
@@ -406,6 +419,76 @@ event: response.reasoning_text.delta
 data: {"type":"response.reasoning_text.delta","output_index":0,"content_index":0,"delta":"Let me think..."}
 ```
 
+### Gemini generateContent — Non-streaming
+
+```bash
+curl http://localhost:8006/gemini/v1beta/models/gemini-2.5-pro:generateContent \
+  -H "Content-Type: application/json" \
+  -d '{
+    "contents": [
+      {"role": "user", "parts": [{"text": "Hello!"}]}
+    ],
+    "generationConfig": {"maxOutputTokens": 200}
+  }'
+```
+
+### Gemini generateContent — Streaming
+
+```bash
+curl -N http://localhost:8006/gemini/v1beta/models/gemini-2.5-pro:streamGenerateContent \
+  -H "Content-Type: application/json" \
+  -d '{
+    "contents": [
+      {"role": "user", "parts": [{"text": "Hello!"}]}
+    ],
+    "generationConfig": {"maxOutputTokens": 200}
+  }'
+```
+
+### Gemini embedContent
+
+```bash
+curl http://localhost:8006/gemini/v1beta/models/text-embedding-3-small:embedContent \
+  -H "Content-Type: application/json" \
+  -d '{
+    "content": {"parts": [{"text": "Hello!"}]},
+    "outputDimensionality": 768
+  }'
+```
+
+### OpenAI Embeddings — Direct forward
+
+```bash
+curl http://localhost:8006/openai/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{"model":"text-embedding-3-small","input":"Hello!"}'
+```
+
+### OpenAI Audio Speech — Direct forward
+
+```bash
+curl http://localhost:8006/openai/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"model":"tts-1","voice":"alloy","input":"Hello!"}' \
+  --output speech.mp3
+```
+
+### OpenAI Audio Transcriptions — Direct forward
+
+```bash
+curl http://localhost:8006/openai/v1/audio/transcriptions \
+  -F model=whisper-1 \
+  -F file=@audio.mp3
+```
+
+### OpenAI Image Generation — Direct forward
+
+```bash
+curl http://localhost:8006/openai/v1/images/generations \
+  -H "Content-Type: application/json" \
+  -d '{"model":"dall-e-3","prompt":"a small red robot","size":"1024x1024"}'
+```
+
 ## Translation Mapping
 
 ### Anthropic ↔ Chat Completions
@@ -465,6 +548,52 @@ data: {"type":"response.reasoning_text.delta","output_index":0,"content_index":0
 | `usage.prompt_tokens` | `usage.input_tokens` |
 | `usage.completion_tokens` | `usage.output_tokens` |
 
+### Gemini ↔ Chat Completions
+
+**Request:**
+
+| Gemini | Chat Completions |
+|--------|------------------|
+| URL `{model}` | `model` |
+| `systemInstruction.parts[].text` | `messages[0]` with `role: "system"` |
+| `contents[].role: "user"` | `role: "user"` |
+| `contents[].role: "model"` | `role: "assistant"` |
+| `parts[].text` | text content |
+| `parts[].inlineData` | `image_url` data URI |
+| `parts[].fileData.fileUri` | `image_url` URL |
+| `tools[].functionDeclarations[]` | `tools[].function` |
+| `generationConfig.maxOutputTokens` | `max_tokens` |
+| `generationConfig.temperature` | `temperature` |
+| `generationConfig.topP` | `top_p` |
+| `generationConfig.topK` | `top_k` |
+| `safetySettings` | accepted but ignored |
+
+**Response:**
+
+| Chat Completions | Gemini |
+|------------------|--------|
+| `choices[].message.content` | `candidates[].content.parts[].text` |
+| `choices[].message.tool_calls` | `parts[].functionCall` |
+| `finish_reason: "stop"` | `finishReason: "STOP"` |
+| `finish_reason: "length"` | `finishReason: "MAX_TOKENS"` |
+| `usage.prompt_tokens` | `usageMetadata.promptTokenCount` |
+| `usage.completion_tokens` | `usageMetadata.candidatesTokenCount` |
+
+### Gemini embedContent ↔ OpenAI Embeddings
+
+| Gemini | OpenAI Embeddings |
+|--------|-------------------|
+| URL `{model}` | `model` |
+| `content.parts[].text` | `input` string |
+| multiple text parts | newline-joined `input` |
+| `outputDimensionality` | `dimensions` |
+| `taskType` | accepted but ignored |
+| `title` | accepted but ignored |
+
+| OpenAI Embeddings | Gemini |
+|-------------------|--------|
+| `data[0].embedding` | `embedding.values` |
+
 ## Project Structure
 
 ```
@@ -481,7 +610,8 @@ anthropic-proxy/
 │   │   ├── stop.go          # Stop/status via PID file
 │   │   └── stop_unix.go
 │   ├── handler/
-│   │   └── handler.go       # HTTP handlers for all endpoints
+│   │   ├── handler.go       # HTTP handlers for translated endpoints
+│   │   └── forward.go       # Direct-forward handlers for OpenAI-compatible endpoints
 │   ├── store/
 │   │   └── store.go         # In-memory response store (TTL-based)
 │   ├── translator/
@@ -489,11 +619,17 @@ anthropic-proxy/
 │   │   ├── response.go      # Chat Completions → Anthropic response
 │   │   ├── stream.go        # Chat Completions SSE → Anthropic SSE
 │   │   ├── responses.go     # Responses ↔ Chat Completions translator
-│   │   └── responses_stream.go  # Responses SSE stream translator
+│   │   ├── responses_stream.go  # Responses SSE stream translator
+│   │   ├── gemini_request.go    # Gemini → Chat Completions request
+│   │   ├── gemini_response.go   # Chat Completions → Gemini response
+│   │   ├── gemini_stream.go     # Chat Completions SSE → Gemini SSE
+│   │   └── gemini_embeddings.go # Gemini embedContent ↔ OpenAI Embeddings
 │   └── types/
 │       ├── anthropic.go     # Anthropic API types
 │       ├── openai.go        # OpenAI Chat Completions types
-│       └── responses.go     # OpenAI Responses API types
+│       ├── responses.go     # OpenAI Responses API types
+│       ├── gemini.go        # Gemini API types
+│       └── embeddings.go    # OpenAI Embeddings API types
 ├── docs/
 │   ├── ARCHITECTURE.md      # Internal design, translation patterns
 │   └── TROUBLESHOOTING.md   # Known issues, fixes, debugging tips
