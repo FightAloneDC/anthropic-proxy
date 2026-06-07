@@ -4,6 +4,7 @@
 server:
   port: 8006
   # fg: false  # Run in foreground (default: daemon mode)
+  # log: "./debug-output/proxy.log"  # Optional log file path
 
 backend:
   url: "https://url-to-openai-compatible-backend.com/v1"
@@ -12,6 +13,10 @@ backend:
 proxy:
   skip_thinking: false  # Skip reasoning/thinking blocks
   debug: false          # Enable debug logging
+  log_format: "text"    # text or json
+  log_level: "info"     # debug, info, warn, error
+  metrics_enabled: true
+  health_backend_check: false
   # store_ttl: 3600     # Response store TTL in seconds (default: 3600)
   # store_max_entries: 1000  # Max stored responses (default: 1000)
 

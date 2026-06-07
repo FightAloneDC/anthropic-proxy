@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	"anthropic-proxy/internal/config"
@@ -28,6 +29,7 @@ Flags (for start/restart):
   -key string       backend API key (overrides config)
   -skip-thinking    skip thinking blocks (overrides config)
   -debug            enable debug logging (overrides config)
+  -log-file string  write logs to this file path (overrides config)
   -fg               run in foreground (not as daemon)
 `
 
@@ -97,13 +99,36 @@ func main() {
 	runServer(cfg)
 }
 
+func setupLogFile(path string) (*os.File, error) {
+	dir := filepath.Dir(path)
+	if dir != "." && dir != "" {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return nil, err
+		}
+	}
+	logFile, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return nil, err
+	}
+	log.SetOutput(logFile)
+	return logFile, nil
+}
+
 func runServer(cfg *config.Config) {
-	// Setup logging to file when running as daemon
-	if daemon.IsDaemon() {
+	if cfg.Server.Log != "" {
+		logFile, err := setupLogFile(cfg.Server.Log)
+		if err != nil {
+			log.Fatalf("Failed to setup log file: %v", err)
+		}
+		defer logFile.Close()
+	} else if daemon.IsDaemon() {
 		logFile := daemon.SetupLog()
 		if logFile != nil {
 			defer logFile.Close()
 		}
+	}
+
+	if daemon.IsDaemon() {
 		daemon.WritePIDFile()
 	}
 
@@ -132,21 +157,25 @@ func runServer(cfg *config.Config) {
 	h := handler.New(cfg, responseStore)
 
 	// Register routes — Anthropic
-	http.HandleFunc("/anthropic/v1/messages", h.MessagesHandler)
-	http.HandleFunc("/anthropic/v1/models", h.ModelsHandler)
+	http.HandleFunc("/anthropic/v1/messages", h.Observe("/anthropic/v1/messages", h.MessagesHandler))
+	http.HandleFunc("/anthropic/v1/models", h.Observe("/anthropic/v1/models", h.ModelsHandler))
 
 	// Register routes — OpenAI
-	http.HandleFunc("/openai/v1/responses", h.ResponsesHandler)
-	http.HandleFunc("/openai/v1/chat/completions", h.ChatCompletionsHandler)
-	http.HandleFunc("/openai/v1/models", h.ModelsHandler)
-	http.HandleFunc("/openai/v1/embeddings", h.DirectForwardHandler("/v1/embeddings"))
-	http.HandleFunc("/openai/v1/rerank", h.DirectForwardHandler("/v1/rerank"))
-	http.HandleFunc("/openai/v1/audio/speech", h.DirectForwardHandler("/v1/audio/speech"))
-	http.HandleFunc("/openai/v1/audio/transcriptions", h.DirectForwardHandler("/v1/audio/transcriptions"))
-	http.HandleFunc("/openai/v1/images/generations", h.DirectForwardHandler("/v1/images/generations"))
+	http.HandleFunc("/openai/v1/responses", h.Observe("/openai/v1/responses", h.ResponsesHandler))
+	http.HandleFunc("/openai/v1/chat/completions", h.Observe("/openai/v1/chat/completions", h.ChatCompletionsHandler))
+	http.HandleFunc("/openai/v1/models", h.Observe("/openai/v1/models", h.ModelsHandler))
+	http.HandleFunc("/openai/v1/embeddings", h.Observe("/openai/v1/embeddings", h.DirectForwardHandler("/v1/embeddings")))
+	http.HandleFunc("/openai/v1/rerank", h.Observe("/openai/v1/rerank", h.DirectForwardHandler("/v1/rerank")))
+	http.HandleFunc("/openai/v1/audio/speech", h.Observe("/openai/v1/audio/speech", h.DirectForwardHandler("/v1/audio/speech")))
+	http.HandleFunc("/openai/v1/audio/transcriptions", h.Observe("/openai/v1/audio/transcriptions", h.DirectForwardHandler("/v1/audio/transcriptions")))
+	http.HandleFunc("/openai/v1/images/generations", h.Observe("/openai/v1/images/generations", h.DirectForwardHandler("/v1/images/generations")))
 
 	// Register routes — Gemini
-	http.HandleFunc("/gemini/v1beta/models/", h.GeminiHandler)
+	http.HandleFunc("/gemini/v1beta/models/", h.Observe("/gemini/v1beta/models/{model}:action", h.GeminiHandler))
+
+	// Register routes — Utility
+	http.HandleFunc("/health", h.Observe("/health", h.HealthHandler))
+	http.HandleFunc("/metrics", h.MetricsHandler)
 
 	// Start server
 	log.Printf("anthropic-proxy listening on :%d → %s", cfg.Server.Port, cfg.Backend.URL)

@@ -59,6 +59,9 @@ The proxy is a **universal translator** between three API formats:
 /gemini/v1beta/models/{model}:generateContent        → translate to chat/completions
 /gemini/v1beta/models/{model}:streamGenerateContent  → translate to chat/completions
 /gemini/v1beta/models/{model}:embedContent           → translate to embeddings
+
+/health                  → health check
+/metrics                 → Prometheus-style metrics
 ```
 
 **Naming convention:** `/{provider}/v1/{endpoint}`

@@ -142,6 +142,27 @@ Coverage:
 - Binary response passthrough for audio-style responses.
 - `GET` rejected on direct-forward POST-only endpoints.
 
+### Hardening & Observability Phase 3
+
+Files:
+
+```text
+internal/handler/validation_test.go
+internal/handler/observability_test.go
+internal/handler/health_test.go
+cmd/anthropic-proxy/main_test.go
+```
+
+Coverage:
+
+- Validation rejects missing/invalid Anthropic, Responses, and Gemini request fields.
+- Request ID helper prefers inbound `x-request-id`.
+- Observability middleware sets response/request IDs and records metrics.
+- Logger level filtering and JSON output work without leaking filtered fields.
+- `/health` returns proxy/store status without exposing backend API keys.
+- `/metrics` returns Prometheus-style text output.
+- Log-file setup creates missing parent directories and appends across sessions.
+
 ## Local Manual Smoke Test Config
 
 Automated tests use `httptest` and do not need `config.yaml`. Manual smoke tests need a real OpenAI-compatible backend.

@@ -36,6 +36,7 @@ func (h *Handler) DirectForwardHandler(targetPath string) http.HandlerFunc {
 		copyForwardHeader(proxyReq.Header, r.Header, "Content-Type")
 		copyForwardHeader(proxyReq.Header, r.Header, "Accept")
 		copyForwardHeader(proxyReq.Header, r.Header, "User-Agent")
+		proxyReq.Header.Set("x-request-id", requestID(r))
 
 		if h.cfg.Backend.APIKey != "" {
 			proxyReq.Header.Set("Authorization", "Bearer "+h.cfg.Backend.APIKey)

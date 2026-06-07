@@ -31,10 +31,14 @@ type BackendConfig struct {
 
 // ProxyConfig holds proxy behavior settings
 type ProxyConfig struct {
-	SkipThinking    bool `yaml:"skip_thinking"`
-	Debug           bool `yaml:"debug"`
-	StoreTTL        int  `yaml:"store_ttl"`         // seconds, default 3600
-	StoreMaxEntries int  `yaml:"store_max_entries"`  // default 1000
+	SkipThinking       bool   `yaml:"skip_thinking"`
+	Debug              bool   `yaml:"debug"`
+	StoreTTL           int    `yaml:"store_ttl"`         // seconds, default 3600
+	StoreMaxEntries    int    `yaml:"store_max_entries"` // default 1000
+	LogFormat          string `yaml:"log_format"`        // "text" or "json"
+	LogLevel           string `yaml:"log_level"`         // debug, info, warn, error
+	MetricsEnabled     *bool  `yaml:"metrics_enabled"`   // default true
+	HealthBackendCheck bool   `yaml:"health_backend_check"`
 }
 
 // ModelMap represents a single model mapping
@@ -62,15 +66,22 @@ func Load() (*Config, error) {
 	skipThinking := flag.Bool("skip-thinking", false, "skip thinking blocks (overrides config)")
 	debugFlag := flag.Bool("debug", false, "enable debug logging (overrides config)")
 	fg := flag.Bool("fg", false, "run in foreground (overrides config)")
+	logFile := flag.String("log-file", "", "write logs to this file path (overrides config)")
 	flag.Parse()
 
 	// Load config file
+	metricsEnabled := true
 	cfg := &Config{
 		Server: ServerConfig{
 			Port: 8006,
 		},
 		Backend: BackendConfig{
 			URL: "http://localhost:11434",
+		},
+		Proxy: ProxyConfig{
+			LogFormat:      "text",
+			LogLevel:       "info",
+			MetricsEnabled: &metricsEnabled,
 		},
 	}
 
@@ -101,6 +112,20 @@ func Load() (*Config, error) {
 	}
 	if *fg {
 		cfg.Server.Fg = true
+	}
+	if *logFile != "" {
+		cfg.Server.Log = *logFile
+	}
+
+	if cfg.Proxy.LogFormat == "" {
+		cfg.Proxy.LogFormat = "text"
+	}
+	if cfg.Proxy.LogLevel == "" {
+		cfg.Proxy.LogLevel = "info"
+	}
+	if cfg.Proxy.MetricsEnabled == nil {
+		enabled := true
+		cfg.Proxy.MetricsEnabled = &enabled
 	}
 
 	// Also check env vars as fallback

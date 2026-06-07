@@ -117,3 +117,19 @@ func (s *ResponseStore) Len() int {
 	defer s.mu.RUnlock()
 	return len(s.entries)
 }
+
+type Stats struct {
+	Entries    int `json:"entries"`
+	MaxEntries int `json:"max_entries"`
+	TTLSeconds int `json:"ttl_seconds"`
+}
+
+func (s *ResponseStore) Stats() Stats {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return Stats{
+		Entries:    len(s.entries),
+		MaxEntries: s.maxSize,
+		TTLSeconds: int(s.ttl.Seconds()),
+	}
+}

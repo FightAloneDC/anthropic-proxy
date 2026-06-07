@@ -19,17 +19,21 @@ import (
 
 // Handler holds the HTTP handlers for the proxy
 type Handler struct {
-	cfg    *config.Config
-	client *http.Client
-	store  *store.ResponseStore
+	cfg     *config.Config
+	client  *http.Client
+	store   *store.ResponseStore
+	metrics *Metrics
+	logger  *Logger
 }
 
 // New creates a new Handler instance
 func New(cfg *config.Config, s *store.ResponseStore) *Handler {
 	return &Handler{
-		cfg:    cfg,
-		client: &http.Client{Timeout: 5 * time.Minute},
-		store:  s,
+		cfg:     cfg,
+		client:  &http.Client{Timeout: 5 * time.Minute},
+		store:   s,
+		metrics: NewMetrics(),
+		logger:  NewLogger(cfg.Proxy.LogFormat, cfg.Proxy.LogLevel),
 	}
 }
 
@@ -105,6 +109,10 @@ func (h *Handler) MessagesHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON: "+err.Error())
 		return
 	}
+	if err := validateAnthropicRequest(&anthropicReq); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
 
 	// Apply model mapping
 	modelMap := h.cfg.GetModelMap()
@@ -134,6 +142,7 @@ func (h *Handler) MessagesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	proxyReq.Header.Set("Content-Type", "application/json")
+	proxyReq.Header.Set("x-request-id", requestID(r))
 
 	// Always use configured API key for backend
 	if h.cfg.Backend.APIKey != "" {
@@ -206,7 +215,9 @@ func (h *Handler) nonStreamResponse(w http.ResponseWriter, resp *http.Response, 
 	} else {
 		w.Header().Set("anthropic-version", "2023-06-01")
 	}
-	w.Header().Set("request-id", fmt.Sprintf("req-%d", time.Now().UnixNano()))
+	if w.Header().Get("request-id") == "" {
+		w.Header().Set("request-id", fmt.Sprintf("req-%d", time.Now().UnixNano()))
+	}
 	json.NewEncoder(w).Encode(anthropicResp)
 }
 
@@ -225,7 +236,9 @@ func (h *Handler) streamResponse(w http.ResponseWriter, resp *http.Response, ant
 	} else {
 		w.Header().Set("anthropic-version", "2023-06-01")
 	}
-	w.Header().Set("request-id", fmt.Sprintf("req-%d", time.Now().UnixNano()))
+	if w.Header().Get("request-id") == "" {
+		w.Header().Set("request-id", fmt.Sprintf("req-%d", time.Now().UnixNano()))
+	}
 
 	// Ratelimit headers (dummy values)
 	w.Header().Set("anthropic-ratelimit-requests-limit", "1000")
@@ -302,6 +315,10 @@ func (h *Handler) ResponsesHandler(w http.ResponseWriter, r *http.Request) {
 		writeResponsesError(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON: "+err.Error())
 		return
 	}
+	if err := validateResponsesRequest(&responsesReq); err != nil {
+		writeResponsesError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
 
 	// Handle previous_response_id
 	var prevMessages []types.OpenAIMsg
@@ -343,6 +360,7 @@ func (h *Handler) ResponsesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	proxyReq.Header.Set("Content-Type", "application/json")
+	proxyReq.Header.Set("x-request-id", requestID(r))
 
 	if h.cfg.Backend.APIKey != "" {
 		proxyReq.Header.Set("Authorization", "Bearer "+h.cfg.Backend.APIKey)
@@ -499,6 +517,7 @@ func (h *Handler) ChatCompletionsHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	proxyReq.Header.Set("Content-Type", "application/json")
+	proxyReq.Header.Set("x-request-id", requestID(r))
 
 	if h.cfg.Backend.APIKey != "" {
 		proxyReq.Header.Set("Authorization", "Bearer "+h.cfg.Backend.APIKey)
@@ -579,13 +598,17 @@ func (h *Handler) GeminiHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if action == "embedContent" {
-		h.geminiEmbedContent(w, body, model)
+		h.geminiEmbedContent(w, r, body, model)
 		return
 	}
 
 	var geminiReq types.GeminiRequest
 	if err := json.Unmarshal(body, &geminiReq); err != nil {
 		writeGeminiError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if err := validateGeminiRequest(&geminiReq); err != nil {
+		writeGeminiError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -608,6 +631,7 @@ func (h *Handler) GeminiHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	proxyReq.Header.Set("Content-Type", "application/json")
+	proxyReq.Header.Set("x-request-id", requestID(r))
 
 	if h.cfg.Backend.APIKey != "" {
 		proxyReq.Header.Set("Authorization", "Bearer "+h.cfg.Backend.APIKey)
@@ -650,10 +674,14 @@ func parseGeminiPath(path string) (string, string, bool) {
 	return "", "", false
 }
 
-func (h *Handler) geminiEmbedContent(w http.ResponseWriter, body []byte, model string) {
+func (h *Handler) geminiEmbedContent(w http.ResponseWriter, r *http.Request, body []byte, model string) {
 	var geminiReq types.GeminiEmbedContentRequest
 	if err := json.Unmarshal(body, &geminiReq); err != nil {
 		writeGeminiError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if err := validateGeminiEmbedContentRequest(&geminiReq); err != nil {
+		writeGeminiError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -676,6 +704,7 @@ func (h *Handler) geminiEmbedContent(w http.ResponseWriter, body []byte, model s
 		return
 	}
 	proxyReq.Header.Set("Content-Type", "application/json")
+	proxyReq.Header.Set("x-request-id", requestID(r))
 
 	if h.cfg.Backend.APIKey != "" {
 		proxyReq.Header.Set("Authorization", "Bearer "+h.cfg.Backend.APIKey)

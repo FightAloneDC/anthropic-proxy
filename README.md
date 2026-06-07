@@ -96,6 +96,7 @@ Flags (for start/restart):
   -key string       backend API key (overrides config)
   -skip-thinking    skip thinking blocks (overrides config)
   -debug            enable debug logging (overrides config)
+  -log-file string  write logs to this file path (overrides config)
   -fg               run in foreground (not as daemon)
 ```
 
@@ -109,6 +110,7 @@ Priority: **CLI flags > YAML config > environment variables**
 server:
   port: 8006
   # fg: false  # Run in foreground (default: daemon mode)
+  # log: "./debug-output/proxy.log"  # Optional log file path
 
 backend:
   url: "https://your-openai-compatible-backend.com/v1"
@@ -117,6 +119,10 @@ backend:
 proxy:
   skip_thinking: false     # Skip reasoning/thinking blocks
   debug: false             # Enable debug logging
+  log_format: "text"        # text or json
+  log_level: "info"         # debug, info, warn, error
+  metrics_enabled: true
+  health_backend_check: false
   store_ttl: 3600          # Response store TTL in seconds (default: 3600)
   store_max_entries: 1000  # Max stored responses (default: 1000)
 
@@ -154,6 +160,8 @@ MODEL_MAP=claude-opus-4-8:your-model,claude-sonnet-4-6:your-model
 | `/gemini/v1beta/models/{model}:generateContent` | POST | Gemini generateContent API (translated) |
 | `/gemini/v1beta/models/{model}:streamGenerateContent` | POST | Gemini streaming generateContent API (translated) |
 | `/gemini/v1beta/models/{model}:embedContent` | POST | Gemini embedding API (translated) |
+| `/health` | GET | Health check |
+| `/metrics` | GET | Prometheus-style metrics |
 
 ### SDK Configuration
 

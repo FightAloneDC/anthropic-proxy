@@ -2,13 +2,17 @@
 
 Development plan for anthropic-proxy — features, improvements, and milestones.
 
-## Current State (v2.4.0)
+## Current State (v2.5.0)
 
 - ✅ Anthropic Messages API → Chat Completions translation
 - ✅ OpenAI Responses API → Chat Completions translation
 - ✅ Gemini generateContent API → Chat Completions translation
 - ✅ Gemini embedContent API → OpenAI Embeddings translation
 - ✅ OpenAI-compatible multi-modal direct forwarding
+- ✅ Request validation for translated JSON endpoints
+- ✅ Request ID propagation
+- ✅ Structured logging and optional log file output
+- ✅ Health check and Prometheus-style metrics
 - ✅ Direct forward (Chat Completions)
 - ✅ Streaming (SSE) for all translated endpoints
 - ✅ Tool calling (bidirectional)
@@ -119,31 +123,33 @@ Development plan for anthropic-proxy — features, improvements, and milestones.
 
 ---
 
-## v2.5.0 — Hardening & Observability
+## v2.5.0 — Hardening & Observability ✅ Completed
 
 **Priority: Medium**
 
 ### Request Validation
 - Validate required fields before translation (model, input, messages)
-- Return proper error responses for malformed requests
-- Validate max_tokens ranges, temperature bounds
+- Return proper API-specific error responses for malformed requests
+- Validate token and sampling parameter bounds
 
 ### Structured Logging
-- Replace raw `log.Printf` with structured logging (JSON format option)
-- Request ID propagation through entire request lifecycle
+- Request ID propagation through client responses and backend requests
 - Log levels: debug, info, warn, error
+- Text and JSON log formats
+- Optional log file output via `server.log` or `-log-file`
 
 ### Metrics
 - Request count per endpoint
-- Latency histograms (p50, p95, p99)
-- Error rate by type
-- Active connections gauge
-- Optional Prometheus `/metrics` endpoint
+- Request duration summaries
+- Error count by endpoint/status
+- Active request gauge
+- Prometheus-style `GET /metrics` endpoint
 
 ### Health Check
 - `GET /health` endpoint
-- Backend connectivity check
-- Store status (entries count, memory usage)
+- Backend configuration status
+- Store status (entries, max entries, TTL)
+- API keys are not exposed in health responses
 
 ---
 
