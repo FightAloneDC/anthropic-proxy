@@ -297,18 +297,30 @@ Each chunk triggers state transitions and emits appropriate events.
 
 ### Response Store (for `previous_response_id`)
 
-**Location:** `internal/store/store.go`
+**Location:** `internal/store/`
 
-- **In-memory** — no persistence across restarts
+- **Memory backend** — default behavior; no persistence across restarts
+- **File backend** — optional JSONL persistence via `proxy.store_backend: file`
 - **TTL-based** — entries expire after configurable time (default 1 hour)
-- **Max capacity** — FIFO eviction when full (default 1000 entries)
+- **Max capacity** — oldest-entry eviction when full (default 1000 entries)
 - **Thread-safe** — `sync.RWMutex` for concurrent access
-- **Background cleanup** — goroutine runs every TTL/2
+- **Background cleanup** — goroutine removes expired entries
+- **Atomic compaction** — file backend rewrites through a temp file then rename
 
 **Usage:**
 1. After successful non-streaming Responses API response, store it: `store.Store(id, response)`
 2. When `previous_response_id` is set in request, fetch: `store.Get(id)`
 3. Convert stored response output to messages and prepend to new request
+
+### Reliability Helpers
+
+**Location:** `internal/reliability/`
+
+- Retry helper replays safe buffered JSON requests on transient backend failures.
+- Circuit breaker can fail fast when enabled and repeated backend failures are observed.
+- Rate limiter is optional, per-client, and disabled by default.
+- Streaming requests are not retried after backend streaming starts.
+- `/health` and `/metrics` are excluded from rate limiting.
 
 ---
 

@@ -153,29 +153,34 @@ Development plan for anthropic-proxy — features, improvements, and milestones.
 
 ---
 
-## v2.6.0 — Persistence & Reliability
+## v2.6.0 — Persistence & Reliability ✅ Completed
 
 **Priority: High**
 
 ### Persistent Response Store
-- Option to use file-based or Redis store for `previous_response_id`
-- Survives server restarts
-- Config: `store_backend: memory|file|redis`
+- Configurable memory or file-backed store for `previous_response_id`
+- File store survives server restarts
+- Config: `store_backend: memory|file`
 
 ### Backend Health Monitoring
-- Periodic health checks to backend
+- Optional periodic health checks to backend
 - Circuit breaker pattern — stop forwarding if backend is down
 - Auto-recovery when backend comes back
 
 ### Retry Logic
-- Configurable retry on backend errors (5xx, timeout)
+- Configurable retry on backend errors (429, 502, 503, 504, timeout)
 - Exponential backoff
 - Max retry count
 
 ### Rate Limiting
 - Optional rate limiting on proxy side
-- Per-IP or per-API-key limits
+- Per-IP limits
 - Configurable via YAML
+
+### Compatibility Guardrails
+- Streaming wrappers preserve `http.Flusher`
+- Chat Completions model mapping remains active
+- `*/models` endpoints include configured model mapping aliases
 
 ---
 

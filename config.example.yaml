@@ -17,8 +17,23 @@ proxy:
   log_level: "info"     # debug, info, warn, error
   metrics_enabled: true
   health_backend_check: false
+  store_backend: "memory"       # memory|file
+  store_file: "./data/responses.jsonl"  # Used when store_backend=file
   # store_ttl: 3600     # Response store TTL in seconds (default: 3600)
   # store_max_entries: 1000  # Max stored responses (default: 1000)
+  backend_health_enabled: false
+  backend_health_interval: 30
+  backend_health_timeout: 5
+  circuit_breaker_enabled: true
+  circuit_breaker_failure_threshold: 3
+  circuit_breaker_cooldown: 30
+  retry_enabled: true
+  retry_max_attempts: 3
+  retry_initial_backoff_ms: 200
+  retry_max_backoff_ms: 2000
+  rate_limit_enabled: false
+  rate_limit_requests_per_minute: 60
+  rate_limit_burst: 20
 
 # Model mapping: client model → backend model
 # Client sends "claude-opus-4-8" → proxy translates to "mimo-v2.5-pro"

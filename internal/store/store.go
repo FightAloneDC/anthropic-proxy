@@ -7,6 +7,14 @@ import (
 	"anthropic-proxy/internal/types"
 )
 
+type Store interface {
+	Store(id string, resp *types.ResponsesResponse)
+	Get(id string) (*types.ResponsesResponse, bool)
+	Len() int
+	Stats() Stats
+	Close() error
+}
+
 // ResponseStore is a TTL-based in-memory store for Responses API responses.
 // Used to support previous_response_id lookups.
 type ResponseStore struct {
@@ -24,6 +32,10 @@ type entry struct {
 // New creates a new ResponseStore with the given TTL and max size.
 // It starts a background cleanup goroutine that runs every ttl/2.
 func New(ttl time.Duration, maxSize int) *ResponseStore {
+	return NewMemory(ttl, maxSize)
+}
+
+func NewMemory(ttl time.Duration, maxSize int) *ResponseStore {
 	if maxSize <= 0 {
 		maxSize = 1000
 	}
@@ -119,17 +131,24 @@ func (s *ResponseStore) Len() int {
 }
 
 type Stats struct {
-	Entries    int `json:"entries"`
-	MaxEntries int `json:"max_entries"`
-	TTLSeconds int `json:"ttl_seconds"`
+	Backend    string `json:"backend"`
+	Path       string `json:"path,omitempty"`
+	Entries    int    `json:"entries"`
+	MaxEntries int    `json:"max_entries"`
+	TTLSeconds int    `json:"ttl_seconds"`
 }
 
 func (s *ResponseStore) Stats() Stats {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return Stats{
+		Backend:    "memory",
 		Entries:    len(s.entries),
 		MaxEntries: s.maxSize,
 		TTLSeconds: int(s.ttl.Seconds()),
 	}
+}
+
+func (s *ResponseStore) Close() error {
+	return nil
 }

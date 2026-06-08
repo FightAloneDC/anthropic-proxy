@@ -141,8 +141,17 @@ func runServer(cfg *config.Config) {
 	if maxEntries <= 0 {
 		maxEntries = 1000
 	}
-	responseStore := store.New(ttl, maxEntries)
-	log.Printf("Response store: TTL=%v, maxEntries=%d", ttl, maxEntries)
+	responseStore, err := store.NewStore(cfg.Proxy.StoreBackend, cfg.Proxy.StoreFile, ttl, maxEntries)
+	if err != nil {
+		log.Fatalf("Failed to initialize response store: %v", err)
+	}
+	defer responseStore.Close()
+	stats := responseStore.Stats()
+	if stats.Path != "" {
+		log.Printf("Response store: backend=%s, path=%s, TTL=%v, maxEntries=%d", stats.Backend, stats.Path, ttl, maxEntries)
+	} else {
+		log.Printf("Response store: backend=%s, TTL=%v, maxEntries=%d", stats.Backend, ttl, maxEntries)
+	}
 
 	// Log model mappings
 	modelMap := cfg.GetModelMap()
@@ -157,21 +166,21 @@ func runServer(cfg *config.Config) {
 	h := handler.New(cfg, responseStore)
 
 	// Register routes — Anthropic
-	http.HandleFunc("/anthropic/v1/messages", h.Observe("/anthropic/v1/messages", h.MessagesHandler))
-	http.HandleFunc("/anthropic/v1/models", h.Observe("/anthropic/v1/models", h.ModelsHandler))
+	http.HandleFunc("/anthropic/v1/messages", h.Observe("/anthropic/v1/messages", h.RateLimit(h.MessagesHandler)))
+	http.HandleFunc("/anthropic/v1/models", h.Observe("/anthropic/v1/models", h.RateLimit(h.ModelsHandler)))
 
 	// Register routes — OpenAI
-	http.HandleFunc("/openai/v1/responses", h.Observe("/openai/v1/responses", h.ResponsesHandler))
-	http.HandleFunc("/openai/v1/chat/completions", h.Observe("/openai/v1/chat/completions", h.ChatCompletionsHandler))
-	http.HandleFunc("/openai/v1/models", h.Observe("/openai/v1/models", h.ModelsHandler))
-	http.HandleFunc("/openai/v1/embeddings", h.Observe("/openai/v1/embeddings", h.DirectForwardHandler("/v1/embeddings")))
-	http.HandleFunc("/openai/v1/rerank", h.Observe("/openai/v1/rerank", h.DirectForwardHandler("/v1/rerank")))
-	http.HandleFunc("/openai/v1/audio/speech", h.Observe("/openai/v1/audio/speech", h.DirectForwardHandler("/v1/audio/speech")))
-	http.HandleFunc("/openai/v1/audio/transcriptions", h.Observe("/openai/v1/audio/transcriptions", h.DirectForwardHandler("/v1/audio/transcriptions")))
-	http.HandleFunc("/openai/v1/images/generations", h.Observe("/openai/v1/images/generations", h.DirectForwardHandler("/v1/images/generations")))
+	http.HandleFunc("/openai/v1/responses", h.Observe("/openai/v1/responses", h.RateLimit(h.ResponsesHandler)))
+	http.HandleFunc("/openai/v1/chat/completions", h.Observe("/openai/v1/chat/completions", h.RateLimit(h.ChatCompletionsHandler)))
+	http.HandleFunc("/openai/v1/models", h.Observe("/openai/v1/models", h.RateLimit(h.ModelsHandler)))
+	http.HandleFunc("/openai/v1/embeddings", h.Observe("/openai/v1/embeddings", h.RateLimit(h.DirectForwardHandler("/v1/embeddings"))))
+	http.HandleFunc("/openai/v1/rerank", h.Observe("/openai/v1/rerank", h.RateLimit(h.DirectForwardHandler("/v1/rerank"))))
+	http.HandleFunc("/openai/v1/audio/speech", h.Observe("/openai/v1/audio/speech", h.RateLimit(h.DirectForwardHandler("/v1/audio/speech"))))
+	http.HandleFunc("/openai/v1/audio/transcriptions", h.Observe("/openai/v1/audio/transcriptions", h.RateLimit(h.DirectForwardHandler("/v1/audio/transcriptions"))))
+	http.HandleFunc("/openai/v1/images/generations", h.Observe("/openai/v1/images/generations", h.RateLimit(h.DirectForwardHandler("/v1/images/generations"))))
 
 	// Register routes — Gemini
-	http.HandleFunc("/gemini/v1beta/models/", h.Observe("/gemini/v1beta/models/{model}:action", h.GeminiHandler))
+	http.HandleFunc("/gemini/v1beta/models/", h.Observe("/gemini/v1beta/models/{model}:action", h.RateLimit(h.GeminiHandler)))
 
 	// Register routes — Utility
 	http.HandleFunc("/health", h.Observe("/health", h.HealthHandler))

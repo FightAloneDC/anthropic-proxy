@@ -155,13 +155,34 @@ cmd/anthropic-proxy/main_test.go
 
 Coverage:
 
-- Validation rejects missing/invalid Anthropic, Responses, and Gemini request fields.
+- Validation helpers reject missing/invalid Anthropic, Responses, and Gemini request fields.
+- Handler compatibility tests ensure Anthropic/Responses requests are not rejected by strict pre-translation validation.
 - Request ID helper prefers inbound `x-request-id`.
-- Observability middleware sets response/request IDs and records metrics.
+- Observability middleware sets response/request IDs, records metrics, and preserves `http.Flusher` for streaming.
 - Logger level filtering and JSON output work without leaking filtered fields.
 - `/health` returns proxy/store status without exposing backend API keys.
 - `/metrics` returns Prometheus-style text output.
 - Log-file setup creates missing parent directories and appends across sessions.
+
+### Persistence & Reliability Phase 4
+
+Files:
+
+```text
+internal/store/file_test.go
+internal/reliability/*_test.go
+internal/handler/forward_test.go
+```
+
+Coverage:
+
+- File store persists Responses API records across store restarts.
+- File store skips expired/corrupt records, keeps newest duplicate IDs, and enforces max entries.
+- Circuit breaker opens after repeated failures and recovers through half-open success.
+- Retry helper retries transient backend failures and does not retry non-transient `4xx` responses.
+- Rate limiter is disabled by default and rejects over-burst clients only when enabled.
+- `*/models` endpoints include configured model-mapping aliases while preserving backend models.
+- Chat Completions model mapping and retry behavior are covered without changing streaming passthrough behavior.
 
 ## Local Manual Smoke Test Config
 

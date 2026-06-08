@@ -1,6 +1,19 @@
 # Persistence & Reliability Phase 4 Plan
 
-This document describes the implementation plan for Roadmap Phase 4, interpreted as `v2.6.0 — Persistence & Reliability` from `docs/ROADMAP.md`.
+This document describes the implementation plan and completed implementation checklist for Roadmap Phase 4, interpreted as `v2.6.0 — Persistence & Reliability` from `docs/ROADMAP.md`.
+
+## Implementation Status
+
+Status: completed after implementation and verification.
+
+Completed scope:
+
+- Memory/file response store backend.
+- Optional backend health monitor and circuit breaker.
+- Retry helper for safe buffered JSON backend requests.
+- Optional per-IP rate limiter, disabled by default.
+- Model mapping aliases added to `*/models` responses.
+- Compatibility guardrails for streaming, Responses, Anthropic, and Chat Completions model mapping.
 
 ## Goal
 
@@ -89,20 +102,66 @@ Current reliability traits:
 1. **Preserve default behavior.**
    If no new config is set, existing memory store and forwarding behavior should remain familiar.
 
-2. **Avoid data loss surprises.**
+2. **Protect validated agent compatibility.**
+   Claude, Codex, Pi, and OpenCode behavior that has already been manually validated must remain stable throughout Phase 4. Phase 4 reliability work must not reintroduce the previous Anthropic streaming `500`, OpenAI Chat Completions model-mapping `404`, or pre-translation role validation regressions.
+
+3. **Avoid data loss surprises.**
    File store should write atomically and recover gracefully from corrupt/partial records.
 
-3. **Retry only when safe.**
+4. **Retry only when safe.**
    Retry transient backend failures for JSON request bodies that are fully buffered before forwarding. Avoid retrying streaming or multipart bodies by default.
 
-4. **Fail fast when circuit is open.**
-   If backend is known unhealthy, return a clear proxy error instead of waiting for repeated client-facing timeouts.
+5. **Fail fast only when explicitly enabled.**
+   Circuit breaker behavior should not change normal request forwarding unless the relevant reliability feature is enabled and has observed confirmed backend failures.
 
-5. **Keep labels and state bounded.**
+6. **Keep labels and state bounded.**
    Rate limiter state should expire inactive clients. Metrics labels should not include raw IPs unless explicitly needed later.
 
-6. **No new dependencies by default.**
+7. **No new dependencies by default.**
    Use the Go standard library. Redis support can be documented as future work.
+
+## Regression Guardrails
+
+Phase 4 implementation must preserve the currently working proxy behavior before adding new reliability behavior.
+
+Mandatory guardrails:
+
+- `/anthropic/v1/messages` must continue to support streaming through `Observe` and `RateLimit` wrappers without losing `http.Flusher`.
+- `/anthropic/v1/messages` must not reject translated-compatible roles through pre-translation proxy validation.
+- `/openai/v1/responses` must continue to translate to `/v1/chat/completions` and must not be rejected by strict proxy-side input validation before translation.
+- `/openai/v1/chat/completions` must continue to apply configured model mapping even though it is a direct-forward endpoint.
+- All `*/models` endpoints must include model aliases from configured model mapping when mappings exist, while preserving backend-provided model entries.
+- Direct-forward endpoints must preserve the request body except for intentional, tested model mapping changes.
+- New reliability features must be default-off or non-invasive when using existing configuration.
+- Streaming requests must not be retried after backend response streaming has started.
+- Rate limiting must remain disabled by default and must not apply to `/health` or `/metrics`.
+
+Compatibility tests that must keep passing before Phase 4 is considered complete:
+
+- Anthropic Messages streaming still sees `http.Flusher` after observability wrapping.
+- Anthropic Messages forwards translation-compatible role/content shapes instead of returning `400 message role must be user or assistant` before translation.
+- OpenAI Responses forwards minimal translated requests without pre-translation `400` rejection.
+- OpenAI Chat Completions forwards the mapped backend model for configured aliases.
+- `*/models` endpoints include configured model-mapping aliases in their model lists without dropping backend models.
+- Existing manually validated agents remain compatible: Claude, Codex, Pi, and OpenCode.
+
+## Safe Rollout Strategy
+
+Implement Phase 4 in small checkpoints instead of one large patch:
+
+1. First checkpoint: store interface and memory-store compatibility only.
+2. Second checkpoint: file store and file-store tests, disabled unless configured.
+3. Third checkpoint: circuit breaker primitives and tests, not yet wired into request paths by default.
+4. Fourth checkpoint: retry helper and tests, applied only to safe buffered JSON requests.
+5. Fifth checkpoint: optional rate limiter and tests, disabled by default.
+6. Final checkpoint: health/metrics/docs/roadmap updates after all compatibility gates pass.
+
+After each checkpoint:
+
+- Run focused package tests for the touched area.
+- Run handler compatibility tests covering the guardrails above.
+- Run `go test ./...` before moving to the next checkpoint.
+- Do not mark `v2.6.0 — Persistence & Reliability` as completed until all Phase 4 features and compatibility gates pass.
 
 ## Configuration Plan
 
@@ -522,9 +581,28 @@ Sensitive data rules from Phase 3 still apply.
 ### Handler integration tests
 
 - Responses `previous_response_id` survives file store restart.
-- Circuit open returns `503` without contacting backend.
-- Retry succeeds when first backend attempt returns `503` and second returns `200`.
-- Rate limit applies to API endpoints but not `/health`.
+- Circuit open returns `503` without contacting backend when circuit breaker behavior is explicitly enabled and open.
+- Retry succeeds when first backend attempt returns `503` and second returns `200` for safe buffered JSON requests.
+- Rate limit applies to API endpoints only when enabled, but not `/health` or `/metrics`.
+- Existing compatibility tests for Anthropic streaming, Anthropic/Responses pre-translation forwarding, and OpenAI Chat Completions model mapping remain green.
+
+## Compatibility Gate
+
+Before merging each Phase 4 checkpoint, run the existing compatibility safety net:
+
+```bash
+go test ./internal/handler
+```
+
+The safety net must include tests that prevent regressions for:
+
+- Anthropic streaming through observability middleware.
+- Anthropic Messages forwarding without strict pre-translation role rejection.
+- OpenAI Responses forwarding without strict pre-translation input rejection.
+- OpenAI Chat Completions model mapping on direct-forward requests.
+- All `*/models` endpoints exposing configured mapping aliases without removing backend models.
+
+A checkpoint should not proceed if any compatibility test fails, even if the new reliability tests pass.
 
 ## Documentation Updates
 
@@ -550,21 +628,26 @@ Documentation should include:
 
 ## Implementation Order
 
-1. Add store interface and adapt memory store.
-2. Add file store and tests.
-3. Add store factory/wiring from config.
-4. Add health monitor state structs.
-5. Add circuit breaker and tests.
-6. Add retry helper with injectable backoff/sleeper and tests.
-7. Integrate retry/circuit helper into translated JSON handlers.
-8. Add optional rate limiter and tests.
-9. Apply rate limiter middleware to API routes.
-10. Extend `/health` and `/metrics` with reliability state.
-11. Update config example and docs.
-12. Run `gofmt`.
-13. Run `go test ./...`.
-14. Run `make`.
-15. Commit after verification if requested.
+Use the safe rollout checkpoints above as the implementation boundary. Do not combine unrelated checkpoints into one large patch.
+
+1. Confirm the current compatibility baseline with `go test ./internal/handler` and `go test ./...`.
+2. Add store interface and adapt memory store without changing default runtime behavior.
+3. Run focused store tests, handler compatibility tests, and `go test ./...`.
+4. Add file store, factory/wiring, and file-store tests; keep it disabled unless `store_backend: file` is configured.
+5. Run focused store tests, handler compatibility tests, and `go test ./...`.
+6. Add health monitor and circuit breaker primitives with tests; keep behavior non-invasive by default.
+7. Run reliability tests, handler compatibility tests, and `go test ./...`.
+8. Add retry helper with injectable backoff/sleeper and tests; apply only to safe buffered JSON request paths.
+9. Run retry tests, handler compatibility tests, and `go test ./...`.
+10. Add optional rate limiter and tests; keep rate limiting disabled by default and exclude `/health` and `/metrics`.
+11. Run rate limit tests, handler compatibility tests, and `go test ./...`.
+12. Extend `/health` and `/metrics` with reliability state without exposing secrets.
+13. Update `config.example.yaml`, README, architecture, testing docs, and roadmap status.
+14. Run `gofmt` on changed Go files.
+15. Run `go test ./...`.
+16. Run `make`.
+17. Mark `v2.6.0 — Persistence & Reliability` as completed only after all features and compatibility gates pass.
+18. Commit after verification if requested.
 
 ## Verification Plan
 

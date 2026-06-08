@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"anthropic-proxy/internal/config"
+	"anthropic-proxy/internal/reliability"
 	"anthropic-proxy/internal/store"
 	"anthropic-proxy/internal/translator"
 	"anthropic-proxy/internal/types"
@@ -19,21 +20,54 @@ import (
 
 // Handler holds the HTTP handlers for the proxy
 type Handler struct {
-	cfg     *config.Config
-	client  *http.Client
-	store   *store.ResponseStore
-	metrics *Metrics
-	logger  *Logger
+	cfg      *config.Config
+	client   *http.Client
+	store    store.Store
+	metrics  *Metrics
+	logger   *Logger
+	breaker  *reliability.CircuitBreaker
+	limiter  *reliability.RateLimiter
+	health   *reliability.HealthMonitor
+	executor *reliability.BackendExecutor
 }
 
 // New creates a new Handler instance
-func New(cfg *config.Config, s *store.ResponseStore) *Handler {
+func New(cfg *config.Config, s store.Store) *Handler {
+	client := &http.Client{Timeout: 5 * time.Minute}
+	breaker := reliability.NewCircuitBreaker(
+		cfg.Proxy.CircuitBreakerEnabled,
+		cfg.Proxy.CircuitBreakerFailureThreshold,
+		time.Duration(cfg.Proxy.CircuitBreakerCooldown)*time.Second,
+	)
+	executor := &reliability.BackendExecutor{
+		Client:  client,
+		Breaker: breaker,
+		Config: reliability.RetryConfig{
+			Enabled:        cfg.Proxy.RetryEnabled,
+			MaxAttempts:    cfg.Proxy.RetryMaxAttempts,
+			InitialBackoff: time.Duration(cfg.Proxy.RetryInitialBackoffMS) * time.Millisecond,
+			MaxBackoff:     time.Duration(cfg.Proxy.RetryMaxBackoffMS) * time.Millisecond,
+		},
+	}
+	healthMonitor := reliability.NewHealthMonitor(
+		cfg.Proxy.BackendHealthEnabled || cfg.Proxy.HealthBackendCheck,
+		cfg.Backend.URL,
+		cfg.Backend.APIKey,
+		time.Duration(cfg.Proxy.BackendHealthInterval)*time.Second,
+		time.Duration(cfg.Proxy.BackendHealthTimeout)*time.Second,
+		breaker,
+	)
+	healthMonitor.Start()
 	return &Handler{
-		cfg:     cfg,
-		client:  &http.Client{Timeout: 5 * time.Minute},
-		store:   s,
-		metrics: NewMetrics(),
-		logger:  NewLogger(cfg.Proxy.LogFormat, cfg.Proxy.LogLevel),
+		cfg:      cfg,
+		client:   client,
+		store:    s,
+		metrics:  NewMetrics(),
+		logger:   NewLogger(cfg.Proxy.LogFormat, cfg.Proxy.LogLevel),
+		breaker:  breaker,
+		limiter:  reliability.NewRateLimiter(cfg.Proxy.RateLimitEnabled, cfg.Proxy.RateLimitRequestsPerMinute, cfg.Proxy.RateLimitBurst),
+		health:   healthMonitor,
+		executor: executor,
 	}
 }
 
@@ -75,6 +109,9 @@ func (h *Handler) ModelsHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "api_error", "failed to read backend response")
 		return
+	}
+	if resp.StatusCode == http.StatusOK {
+		body = h.enrichModelsResponse(body)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -145,9 +182,14 @@ func (h *Handler) MessagesHandler(w http.ResponseWriter, r *http.Request) {
 		proxyReq.Header.Set("Authorization", "Bearer "+h.cfg.Backend.APIKey)
 	}
 
-	resp, err := h.client.Do(proxyReq)
+	var resp *http.Response
+	if anthropicReq.Stream {
+		resp, err = h.doStreamingBackendRequest(proxyReq)
+	} else {
+		resp, err = h.doBackendRequest(proxyReq, reqBody, true)
+	}
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "api_error", "backend error: "+err.Error())
+		writeBackendError(w, "anthropic", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -358,9 +400,14 @@ func (h *Handler) ResponsesHandler(w http.ResponseWriter, r *http.Request) {
 		proxyReq.Header.Set("Authorization", "Bearer "+h.cfg.Backend.APIKey)
 	}
 
-	resp, err := h.client.Do(proxyReq)
+	var resp *http.Response
+	if responsesReq.Stream {
+		resp, err = h.doStreamingBackendRequest(proxyReq)
+	} else {
+		resp, err = h.doBackendRequest(proxyReq, reqBody, true)
+	}
 	if err != nil {
-		writeResponsesError(w, http.StatusBadGateway, "api_error", "backend error: "+err.Error())
+		writeBackendError(w, "responses", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -529,11 +576,14 @@ func (h *Handler) ChatCompletionsHandler(w http.ResponseWriter, r *http.Request)
 		proxyReq.Header.Set("Authorization", "Bearer "+h.cfg.Backend.APIKey)
 	}
 
-	resp, err := h.client.Do(proxyReq)
+	var resp *http.Response
+	if reqCheck.Stream {
+		resp, err = h.doStreamingBackendRequest(proxyReq)
+	} else {
+		resp, err = h.doBackendRequest(proxyReq, body, true)
+	}
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadGateway)
-		json.NewEncoder(w).Encode(map[string]interface{}{"error": map[string]string{"message": "backend error: " + err.Error()}})
+		writeBackendError(w, "openai", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -643,9 +693,14 @@ func (h *Handler) GeminiHandler(w http.ResponseWriter, r *http.Request) {
 		proxyReq.Header.Set("Authorization", "Bearer "+h.cfg.Backend.APIKey)
 	}
 
-	resp, err := h.client.Do(proxyReq)
+	var resp *http.Response
+	if stream {
+		resp, err = h.doStreamingBackendRequest(proxyReq)
+	} else {
+		resp, err = h.doBackendRequest(proxyReq, reqBody, true)
+	}
 	if err != nil {
-		writeGeminiError(w, http.StatusBadGateway, "backend error: "+err.Error())
+		writeBackendError(w, "gemini", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -716,9 +771,9 @@ func (h *Handler) geminiEmbedContent(w http.ResponseWriter, r *http.Request, bod
 		proxyReq.Header.Set("Authorization", "Bearer "+h.cfg.Backend.APIKey)
 	}
 
-	resp, err := h.client.Do(proxyReq)
+	resp, err := h.doBackendRequest(proxyReq, reqBody, true)
 	if err != nil {
-		writeGeminiError(w, http.StatusBadGateway, "backend error: "+err.Error())
+		writeBackendError(w, "gemini", err)
 		return
 	}
 	defer resp.Body.Close()

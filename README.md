@@ -21,7 +21,8 @@ OpenAI Chat SDK      →  /openai/v1/chat/completions                   ──  
 - **Tool calling** — bidirectional function/tool translation
 - **Reasoning/thinking blocks** — maps `reasoning` ↔ `thinking` blocks
 - **Model mapping** — remap model names to backend equivalents
-- **`previous_response_id`** — in-memory response store for conversation continuity
+- **`previous_response_id`** — memory or file-backed response store for conversation continuity
+- **Persistence & reliability** — optional file store, retry, circuit breaker, health state, and rate limiting
 - **Cache token forwarding** — maps cache hit/miss tokens between formats
 - **Daemon mode** — run as background process with start/stop/restart/status
 
@@ -123,8 +124,23 @@ proxy:
   log_level: "info"         # debug, info, warn, error
   metrics_enabled: true
   health_backend_check: false
+  store_backend: "memory"   # memory or file
+  store_file: "./data/responses.jsonl"
   store_ttl: 3600          # Response store TTL in seconds (default: 3600)
   store_max_entries: 1000  # Max stored responses (default: 1000)
+  backend_health_enabled: false
+  backend_health_interval: 30
+  backend_health_timeout: 5
+  circuit_breaker_enabled: true
+  circuit_breaker_failure_threshold: 3
+  circuit_breaker_cooldown: 30
+  retry_enabled: true
+  retry_max_attempts: 3
+  retry_initial_backoff_ms: 200
+  retry_max_backoff_ms: 2000
+  rate_limit_enabled: false
+  rate_limit_requests_per_minute: 60
+  rate_limit_burst: 20
 
 # Model mapping: client model → backend model
 models:
