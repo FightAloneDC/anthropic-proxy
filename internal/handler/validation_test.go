@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -68,18 +69,64 @@ func TestValidateGeminiEmbedContentRequest(t *testing.T) {
 	}
 }
 
-func TestMessagesHandlerValidationError(t *testing.T) {
-	h := newTestHandler("http://backend.example/v1")
-	req := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages", strings.NewReader(`{"max_tokens":100,"messages":[{"role":"user","content":"hello"}]}`))
+func TestMessagesHandlerForwardsWithoutPreTranslationValidation(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if payload["model"] != "backend-gemini" {
+			t.Fatalf("model = %#v", payload["model"])
+		}
+		messages, ok := payload["messages"].([]interface{})
+		if !ok || len(messages) != 1 {
+			t.Fatalf("messages = %#v", payload["messages"])
+		}
+		message := messages[0].(map[string]interface{})
+		if message["role"] != "system" {
+			t.Fatalf("role = %#v", message["role"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-test","object":"chat.completion","created":1,"model":"backend-gemini","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer backend.Close()
+
+	h := newTestHandler(backend.URL + "/v1")
+	req := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages", strings.NewReader(`{"model":"gemini-2.5-pro","max_tokens":100,"messages":[{"role":"system","content":"hello"}]}`))
 	rec := httptest.NewRecorder()
 
 	h.MessagesHandler(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "model is required") {
-		t.Fatalf("body = %s", rec.Body.String())
+}
+
+func TestResponsesHandlerForwardsWithoutPreTranslationValidation(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if payload["model"] != "backend-gemini" {
+			t.Fatalf("model = %#v", payload["model"])
+		}
+		if payload["messages"] != nil {
+			t.Fatalf("messages = %#v", payload["messages"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-test","object":"chat.completion","created":1,"model":"backend-gemini","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer backend.Close()
+
+	h := newTestHandler(backend.URL + "/v1")
+	req := httptest.NewRequest(http.MethodPost, "/openai/v1/responses", strings.NewReader(`{"model":"gemini-2.5-pro"}`))
+	rec := httptest.NewRecorder()
+
+	h.ResponsesHandler(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
 	}
 }
 

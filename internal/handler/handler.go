@@ -109,10 +109,6 @@ func (h *Handler) MessagesHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON: "+err.Error())
 		return
 	}
-	if err := validateAnthropicRequest(&anthropicReq); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
-		return
-	}
 
 	// Apply model mapping
 	modelMap := h.cfg.GetModelMap()
@@ -313,10 +309,6 @@ func (h *Handler) ResponsesHandler(w http.ResponseWriter, r *http.Request) {
 	var responsesReq types.ResponsesRequest
 	if err := json.Unmarshal(body, &responsesReq); err != nil {
 		writeResponsesError(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON: "+err.Error())
-		return
-	}
-	if err := validateResponsesRequest(&responsesReq); err != nil {
-		writeResponsesError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
 
