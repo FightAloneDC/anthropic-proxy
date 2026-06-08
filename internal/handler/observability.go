@@ -108,6 +108,15 @@ func (sr *statusRecorder) Write(b []byte) (int, error) {
 	return sr.ResponseWriter.Write(b)
 }
 
+func (sr *statusRecorder) Flush() {
+	if sr.status == 0 {
+		sr.status = http.StatusOK
+	}
+	if flusher, ok := sr.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
 type Metrics struct {
 	mu             sync.Mutex
 	requests       map[string]int

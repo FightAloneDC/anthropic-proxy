@@ -491,14 +491,28 @@ func (h *Handler) ChatCompletionsHandler(w http.ResponseWriter, r *http.Request)
 	}
 	targetURL := base + "/v1/chat/completions"
 
-	// Parse to check stream flag
+	// Parse to check stream flag and apply model mapping.
 	var reqCheck struct {
-		Stream bool `json:"stream"`
+		Model  string `json:"model"`
+		Stream bool   `json:"stream"`
 	}
 	json.Unmarshal(body, &reqCheck)
+	if mapped, ok := h.cfg.GetModelMap()[reqCheck.Model]; ok {
+		if h.cfg.Proxy.Debug {
+			log.Printf("Model mapping: %s → %s", reqCheck.Model, mapped)
+		}
+		var payload map[string]interface{}
+		if err := json.Unmarshal(body, &payload); err == nil {
+			payload["model"] = mapped
+			if mappedBody, err := json.Marshal(payload); err == nil {
+				body = mappedBody
+				reqCheck.Model = mapped
+			}
+		}
+	}
 
 	if h.cfg.Proxy.Debug {
-		log.Printf("→ POST %s stream=%v", targetURL, reqCheck.Stream)
+		log.Printf("→ POST %s model=%s stream=%v", targetURL, reqCheck.Model, reqCheck.Stream)
 	}
 
 	proxyReq, err := http.NewRequest("POST", targetURL, bytes.NewReader(body))

@@ -41,6 +41,28 @@ func TestObserveSetsRequestIDAndMetrics(t *testing.T) {
 	}
 }
 
+func TestObservePreservesFlusher(t *testing.T) {
+	h := newTestHandler("http://backend.example/v1")
+	req := httptest.NewRequest(http.MethodGet, "/stream", nil)
+	rec := httptest.NewRecorder()
+
+	h.Observe("/stream", func(w http.ResponseWriter, r *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatalf("observed response writer does not implement http.Flusher")
+		}
+		_, _ = w.Write([]byte("data: hello\n\n"))
+		flusher.Flush()
+	})(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if body := rec.Body.String(); body != "data: hello\n\n" {
+		t.Fatalf("body = %q", body)
+	}
+}
+
 func TestLoggerJSONAndLevelFiltering(t *testing.T) {
 	var buf bytes.Buffer
 	oldOutput := log.Writer()

@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -73,6 +74,40 @@ func TestDirectForwardHandlerCopiesBinaryResponse(t *testing.T) {
 	body := rec.Body.Bytes()
 	if len(body) != 3 || body[0] != 0x01 || body[1] != 0x02 || body[2] != 0x03 {
 		t.Fatalf("body = %#v", body)
+	}
+}
+
+func TestChatCompletionsHandlerAppliesModelMapping(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("backend path = %q", r.URL.Path)
+		}
+		var payload map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if payload["model"] != "backend-gemini" {
+			t.Fatalf("model = %#v", payload["model"])
+		}
+		if payload["messages"] == nil {
+			t.Fatalf("messages missing: %#v", payload)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer backend.Close()
+
+	h := newTestHandler(backend.URL + "/v1")
+	req := httptest.NewRequest(http.MethodPost, "/openai/v1/chat/completions", strings.NewReader(`{"model":"gemini-2.5-pro","messages":[{"role":"user","content":"hello"}]}`))
+	rec := httptest.NewRecorder()
+
+	h.ChatCompletionsHandler(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	if rec.Body.String() != `{"ok":true}` {
+		t.Fatalf("body = %s", rec.Body.String())
 	}
 }
 
