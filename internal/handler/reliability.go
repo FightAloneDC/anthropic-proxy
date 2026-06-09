@@ -58,6 +58,43 @@ func writeBackendError(w http.ResponseWriter, family string, err error) {
 	}
 }
 
+func (h *Handler) mergeModelsResponses(bodies [][]byte) []byte {
+	merged := map[string]interface{}{
+		"object": "list",
+		"data":   []interface{}{},
+	}
+	data := make([]interface{}, 0)
+	seen := map[string]bool{}
+	for _, body := range bodies {
+		var payload map[string]interface{}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			continue
+		}
+		items, ok := payload["data"].([]interface{})
+		if !ok {
+			continue
+		}
+		for _, item := range items {
+			model, ok := item.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			id, ok := model["id"].(string)
+			if !ok || seen[id] {
+				continue
+			}
+			seen[id] = true
+			data = append(data, item)
+		}
+	}
+	merged["data"] = data
+	body, err := json.Marshal(merged)
+	if err != nil {
+		return []byte(`{"object":"list","data":[]}`)
+	}
+	return body
+}
+
 func (h *Handler) enrichModelsResponse(body []byte) []byte {
 	modelMap := h.cfg.GetModelMap()
 	if len(modelMap) == 0 {

@@ -10,10 +10,11 @@ import (
 
 // Config represents the application configuration
 type Config struct {
-	Server  ServerConfig  `yaml:"server"`
-	Backend BackendConfig `yaml:"backend"`
-	Proxy   ProxyConfig   `yaml:"proxy"`
-	Models  []ModelMap    `yaml:"models"`
+	Server   ServerConfig    `yaml:"server"`
+	Backend  BackendConfig   `yaml:"backend"`
+	Backends []BackendConfig `yaml:"backends"`
+	Proxy    ProxyConfig     `yaml:"proxy"`
+	Models   []ModelMap      `yaml:"models"`
 }
 
 // ServerConfig holds server-related settings
@@ -25,8 +26,19 @@ type ServerConfig struct {
 
 // BackendConfig holds backend connection settings
 type BackendConfig struct {
-	URL    string `yaml:"url"`
-	APIKey string `yaml:"api_key"`
+	Name      string           `yaml:"name"`
+	URL       string           `yaml:"url"`
+	APIKey    string           `yaml:"api_key"`
+	Models    []string         `yaml:"models"`
+	Weight    int              `yaml:"weight"`
+	Priority  int              `yaml:"priority"`
+	Enabled   *bool            `yaml:"enabled"`
+	Overrides BackendOverrides `yaml:"overrides"`
+}
+
+// BackendOverrides holds backend-specific JSON request compatibility overrides.
+type BackendOverrides struct {
+	DropFields []string `yaml:"drop_fields"`
 }
 
 // ProxyConfig holds proxy behavior settings
@@ -54,6 +66,9 @@ type ProxyConfig struct {
 	RateLimitEnabled               bool   `yaml:"rate_limit_enabled"`
 	RateLimitRequestsPerMinute     int    `yaml:"rate_limit_requests_per_minute"`
 	RateLimitBurst                 int    `yaml:"rate_limit_burst"`
+	LoadBalanceStrategy            string `yaml:"load_balance_strategy"`
+	FailoverEnabled                bool   `yaml:"failover_enabled"`
+	FailoverMaxBackends            int    `yaml:"failover_max_backends"`
 }
 
 // ModelMap represents a single model mapping
@@ -90,9 +105,7 @@ func Load() (*Config, error) {
 		Server: ServerConfig{
 			Port: 8006,
 		},
-		Backend: BackendConfig{
-			URL: "http://localhost:11434",
-		},
+		Backend: BackendConfig{},
 		Proxy: ProxyConfig{
 			StoreBackend:                   "memory",
 			StoreFile:                      "./data/responses.jsonl",
@@ -108,6 +121,8 @@ func Load() (*Config, error) {
 			RetryMaxBackoffMS:              2000,
 			RateLimitRequestsPerMinute:     60,
 			RateLimitBurst:                 20,
+			LoadBalanceStrategy:            "round_robin",
+			FailoverEnabled:                true,
 		},
 	}
 
@@ -186,9 +201,12 @@ func Load() (*Config, error) {
 	if cfg.Proxy.RateLimitBurst <= 0 {
 		cfg.Proxy.RateLimitBurst = 20
 	}
+	if cfg.Proxy.LoadBalanceStrategy == "" {
+		cfg.Proxy.LoadBalanceStrategy = "round_robin"
+	}
 
 	// Also check env vars as fallback
-	if cfg.Backend.URL == "http://localhost:11434" {
+	if cfg.Backend.URL == "" {
 		if envURL := os.Getenv("OPENAI_BASE_URL"); envURL != "" {
 			cfg.Backend.URL = envURL
 		}
@@ -199,7 +217,60 @@ func Load() (*Config, error) {
 		}
 	}
 
+	if err := cfg.NormalizeBackends(); err != nil {
+		return nil, err
+	}
+
 	return cfg, nil
+}
+
+// NormalizeBackends applies defaults and validates configured backends.
+func (c *Config) NormalizeBackends() error {
+	if c.Proxy.LoadBalanceStrategy == "" {
+		c.Proxy.LoadBalanceStrategy = "round_robin"
+	}
+	if len(c.Backends) == 0 {
+		if c.Backend.URL == "" {
+			return fmt.Errorf("backend url is required")
+		}
+		c.Backends = []BackendConfig{{
+			Name:   "default",
+			URL:    c.Backend.URL,
+			APIKey: c.Backend.APIKey,
+			Models: []string{"*"},
+			Weight: 1,
+		}}
+		return nil
+	}
+	seen := map[string]bool{}
+	for i := range c.Backends {
+		backend := &c.Backends[i]
+		if backend.Name == "" {
+			return fmt.Errorf("backend name is required")
+		}
+		if seen[backend.Name] {
+			return fmt.Errorf("duplicate backend name: %s", backend.Name)
+		}
+		seen[backend.Name] = true
+		if backend.URL == "" {
+			return fmt.Errorf("backend %s url is required", backend.Name)
+		}
+		if len(backend.Models) == 0 {
+			backend.Models = []string{"*"}
+		}
+		if backend.Weight <= 0 {
+			backend.Weight = 1
+		}
+	}
+	return nil
+}
+
+// EffectiveBackends returns the normalized backend list.
+func (c *Config) EffectiveBackends() []BackendConfig {
+	if len(c.Backends) == 0 {
+		_ = c.NormalizeBackends()
+	}
+	return c.Backends
 }
 
 func loadFile(path string, cfg *Config) error {

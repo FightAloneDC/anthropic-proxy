@@ -21,6 +21,7 @@ OpenAI Chat SDK      →  /openai/v1/chat/completions                   ──  
 - **Tool calling** — bidirectional function/tool translation
 - **Reasoning/thinking blocks** — maps `reasoning` ↔ `thinking` blocks
 - **Model mapping** — remap model names to backend equivalents
+- **Multi-backend routing** — route mapped models across multiple backends with load balancing and failover
 - **`previous_response_id`** — memory or file-backed response store for conversation continuity
 - **Persistence & reliability** — optional file store, retry, circuit breaker, health state, and rate limiting
 - **Cache token forwarding** — maps cache hit/miss tokens between formats
@@ -117,6 +118,23 @@ backend:
   url: "https://your-openai-compatible-backend.com/v1"
   api_key: "your-api-key"
 
+# Optional: when backends is set, model routing uses the backend-facing
+# model after global model mapping. Public /anthropic/v1/models and
+# /openai/v1/models endpoints are preserved and aggregate backend /v1/models.
+# backends:
+#   - name: primary
+#     url: "https://backend-a.com/v1"
+#     api_key: "key-a"
+#     models: ["mimo-*", "text-embedding-3-*"]
+#     weight: 2
+#     priority: 10
+#   - name: secondary
+#     url: "https://backend-b.com/v1"
+#     api_key: "key-b"
+#     models: ["deepseek-*"]
+#     weight: 1
+#     priority: 20
+
 proxy:
   skip_thinking: false     # Skip reasoning/thinking blocks
   debug: false             # Enable debug logging
@@ -141,6 +159,9 @@ proxy:
   rate_limit_enabled: false
   rate_limit_requests_per_minute: 60
   rate_limit_burst: 20
+  load_balance_strategy: "round_robin"  # round_robin|weighted|least_connections
+  failover_enabled: true
+  failover_max_backends: 0              # 0 means all matching backends
 
 # Model mapping: client model → backend model
 models:
@@ -164,10 +185,10 @@ MODEL_MAP=claude-opus-4-8:your-model,claude-sonnet-4-6:your-model
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/anthropic/v1/messages` | POST | Anthropic Messages API (translated) |
-| `/anthropic/v1/models` | GET | List models (forwarded to backend) |
+| `/anthropic/v1/models` | GET | List models (forwarded/aggregated from backend `/v1/models`) |
 | `/openai/v1/responses` | POST | OpenAI Responses API (translated) |
 | `/openai/v1/chat/completions` | POST | OpenAI Chat Completions (direct forward) |
-| `/openai/v1/models` | GET | List models (forwarded to backend) |
+| `/openai/v1/models` | GET | List models (forwarded/aggregated from backend `/v1/models`) |
 | `/openai/v1/embeddings` | POST | OpenAI Embeddings (direct forward) |
 | `/openai/v1/rerank` | POST | Rerank API (direct forward) |
 | `/openai/v1/audio/speech` | POST | Text-to-speech (direct forward) |

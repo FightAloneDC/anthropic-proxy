@@ -2,7 +2,7 @@
 
 Development plan for anthropic-proxy — features, improvements, and milestones.
 
-## Current State (v2.5.0)
+## Current State (v2.7.0)
 
 - ✅ Anthropic Messages API → Chat Completions translation
 - ✅ OpenAI Responses API → Chat Completions translation
@@ -18,6 +18,10 @@ Development plan for anthropic-proxy — features, improvements, and milestones.
 - ✅ Tool calling (bidirectional)
 - ✅ Reasoning/thinking blocks
 - ✅ Model mapping
+- ✅ Multiple backend configuration
+- ✅ Model-based backend routing
+- ✅ Load balancing and safe failover
+- ✅ Public `/anthropic/v1/models` and `/openai/v1/models` compatibility
 - ✅ Previous response ID (in-memory store)
 - ✅ CLI subcommands (start/stop/restart/status)
 - ✅ Cross-platform builds (5 OS × multiple arch)
@@ -184,7 +188,7 @@ Development plan for anthropic-proxy — features, improvements, and milestones.
 
 ---
 
-## v2.7.0 — Multi-Backend & Load Balancing
+## v2.7.0 — Multi-Backend & Load Balancing ✅ Completed
 
 **Priority: Medium**
 

@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"log"
@@ -16,18 +17,70 @@ func (h *Handler) DirectForwardHandler(targetPath string) http.HandlerFunc {
 			return
 		}
 
-		base := strings.TrimRight(h.cfg.Backend.URL, "/")
-		if strings.HasSuffix(base, "/v1") {
-			base = base[:len(base)-3]
+		target := h.defaultTarget(targetPath)
+		if target == nil {
+			writeOpenAIError(w, http.StatusBadGateway, "no backend configured")
+			return
 		}
-		targetURL := base + targetPath
+
+		var body []byte
+		var err error
+		contentType := r.Header.Get("Content-Type")
+		if h.router.Multi() && strings.HasPrefix(contentType, "application/json") {
+			body, err = io.ReadAll(r.Body)
+			if err != nil {
+				writeOpenAIError(w, http.StatusBadRequest, "failed to read body")
+				return
+			}
+			var reqCheck struct {
+				Model string `json:"model"`
+			}
+			if json.Unmarshal(body, &reqCheck) == nil && reqCheck.Model != "" {
+				if mapped, ok := h.cfg.GetModelMap()[reqCheck.Model]; ok {
+					var payload map[string]interface{}
+					if json.Unmarshal(body, &payload) == nil {
+						payload["model"] = mapped
+						if mappedBody, err := json.Marshal(payload); err == nil {
+							body = mappedBody
+							reqCheck.Model = mapped
+						}
+					}
+				}
+				targets, err := h.modelTargets(reqCheck.Model, targetPath)
+				if err != nil {
+					writeBackendError(w, "openai", err)
+					return
+				}
+				if h.cfg.Proxy.Debug {
+					log.Printf("← %s %s (direct forward)", r.Method, r.URL.Path)
+					log.Printf("→ %s %s model=%s", r.Method, targets[0].url, reqCheck.Model)
+				}
+				resp, err := h.doBackendTargets(targets, r.Method, body, requestID(r), true)
+				if err != nil {
+					writeBackendError(w, "openai", err)
+					return
+				}
+				defer resp.Body.Close()
+				for key, values := range resp.Header {
+					for _, value := range values {
+						w.Header().Add(key, value)
+					}
+				}
+				w.WriteHeader(resp.StatusCode)
+				io.Copy(w, resp.Body)
+				return
+			}
+		}
+		if body != nil {
+			r.Body = io.NopCloser(bytes.NewReader(body))
+		}
 
 		if h.cfg.Proxy.Debug {
 			log.Printf("← %s %s (direct forward)", r.Method, r.URL.Path)
-			log.Printf("→ %s %s", r.Method, targetURL)
+			log.Printf("→ %s %s", r.Method, target.url)
 		}
 
-		proxyReq, err := http.NewRequest(r.Method, targetURL, r.Body)
+		proxyReq, err := http.NewRequest(r.Method, target.url, r.Body)
 		if err != nil {
 			writeOpenAIError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -38,8 +91,8 @@ func (h *Handler) DirectForwardHandler(targetPath string) http.HandlerFunc {
 		copyForwardHeader(proxyReq.Header, r.Header, "User-Agent")
 		proxyReq.Header.Set("x-request-id", requestID(r))
 
-		if h.cfg.Backend.APIKey != "" {
-			proxyReq.Header.Set("Authorization", "Bearer "+h.cfg.Backend.APIKey)
+		if target.apiKey != "" {
+			proxyReq.Header.Set("Authorization", "Bearer "+target.apiKey)
 		}
 
 		resp, err := h.client.Do(proxyReq)

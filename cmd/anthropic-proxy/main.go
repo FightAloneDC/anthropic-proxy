@@ -187,7 +187,13 @@ func runServer(cfg *config.Config) {
 	http.HandleFunc("/metrics", h.MetricsHandler)
 
 	// Start server
-	log.Printf("anthropic-proxy listening on :%d → %s", cfg.Server.Port, cfg.Backend.URL)
+	backendSummary := "no backend configured"
+	if backends := cfg.EffectiveBackends(); len(backends) == 1 {
+		backendSummary = backends[0].URL
+	} else if len(backends) > 1 {
+		backendSummary = fmt.Sprintf("%d backends", len(backends))
+	}
+	log.Printf("anthropic-proxy listening on :%d → %s", cfg.Server.Port, backendSummary)
 	if err := http.ListenAndServe(fmt.Sprintf(":%d", cfg.Server.Port), nil); err != nil {
 		log.Fatalf("Server failed: %v", err)
 		os.Exit(1)

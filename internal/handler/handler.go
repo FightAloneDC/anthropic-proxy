@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"anthropic-proxy/internal/backend"
 	"anthropic-proxy/internal/config"
 	"anthropic-proxy/internal/reliability"
 	"anthropic-proxy/internal/store"
@@ -29,10 +30,18 @@ type Handler struct {
 	limiter  *reliability.RateLimiter
 	health   *reliability.HealthMonitor
 	executor *reliability.BackendExecutor
+	router   *backend.Router
 }
 
 // New creates a new Handler instance
 func New(cfg *config.Config, s store.Store) *Handler {
+	_ = cfg.NormalizeBackends()
+	backendURL := cfg.Backend.URL
+	backendAPIKey := cfg.Backend.APIKey
+	if backends := cfg.EffectiveBackends(); len(backends) > 0 {
+		backendURL = backends[0].URL
+		backendAPIKey = backends[0].APIKey
+	}
 	client := &http.Client{Timeout: 5 * time.Minute}
 	breaker := reliability.NewCircuitBreaker(
 		cfg.Proxy.CircuitBreakerEnabled,
@@ -51,8 +60,8 @@ func New(cfg *config.Config, s store.Store) *Handler {
 	}
 	healthMonitor := reliability.NewHealthMonitor(
 		cfg.Proxy.BackendHealthEnabled || cfg.Proxy.HealthBackendCheck,
-		cfg.Backend.URL,
-		cfg.Backend.APIKey,
+		backendURL,
+		backendAPIKey,
 		time.Duration(cfg.Proxy.BackendHealthInterval)*time.Second,
 		time.Duration(cfg.Proxy.BackendHealthTimeout)*time.Second,
 		breaker,
@@ -68,6 +77,7 @@ func New(cfg *config.Config, s store.Store) *Handler {
 		limiter:  reliability.NewRateLimiter(cfg.Proxy.RateLimitEnabled, cfg.Proxy.RateLimitRequestsPerMinute, cfg.Proxy.RateLimitBurst),
 		health:   healthMonitor,
 		executor: executor,
+		router:   backend.NewRouter(cfg.EffectiveBackends(), cfg.Proxy.LoadBalanceStrategy),
 	}
 }
 
@@ -78,44 +88,65 @@ func (h *Handler) ModelsHandler(w http.ResponseWriter, r *http.Request) {
 		log.Printf("← %s %s x-api-key=%s", r.Method, r.URL.Path, maskKey(apiKey))
 	}
 
-	base := strings.TrimRight(h.cfg.Backend.URL, "/")
-	if strings.HasSuffix(base, "/v1") {
-		base = base[:len(base)-3]
+	targets := make([]*backendTarget, 0)
+	for _, runtime := range h.router.Backends() {
+		targets = append(targets, &backendTarget{
+			name:   runtime.Backend.Name,
+			url:    backend.JoinURL(runtime.Backend.URL, "/v1/models"),
+			apiKey: runtime.Backend.APIKey,
+		})
 	}
-	modelsURL := base + "/v1/models"
-
-	if h.cfg.Proxy.Debug {
-		log.Printf("→ GET %s", modelsURL)
-	}
-
-	proxyReq, err := http.NewRequest("GET", modelsURL, nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "api_error", err.Error())
+	if len(targets) == 0 {
+		writeError(w, http.StatusBadGateway, "api_error", "no backend configured")
 		return
 	}
 
-	if h.cfg.Backend.APIKey != "" {
-		proxyReq.Header.Set("Authorization", "Bearer "+h.cfg.Backend.APIKey)
-	}
+	bodies := make([][]byte, 0, len(targets))
+	var lastStatus int
+	for _, target := range targets {
+		if h.cfg.Proxy.Debug {
+			log.Printf("→ GET %s backend=%s", target.url, target.name)
+		}
 
-	resp, err := h.client.Do(proxyReq)
-	if err != nil {
-		writeError(w, http.StatusBadGateway, "api_error", "backend error: "+err.Error())
+		proxyReq, err := http.NewRequest("GET", target.url, nil)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "api_error", err.Error())
+			return
+		}
+
+		if target.apiKey != "" {
+			proxyReq.Header.Set("Authorization", "Bearer "+target.apiKey)
+		}
+
+		resp, err := h.client.Do(proxyReq)
+		if err != nil {
+			lastStatus = http.StatusBadGateway
+			continue
+		}
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			lastStatus = http.StatusBadGateway
+			continue
+		}
+		lastStatus = resp.StatusCode
+		if resp.StatusCode == http.StatusOK {
+			bodies = append(bodies, body)
+		}
+	}
+	if len(bodies) == 0 {
+		if lastStatus == 0 {
+			lastStatus = http.StatusBadGateway
+		}
+		writeError(w, lastStatus, "api_error", "failed to fetch backend models")
 		return
 	}
-	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		writeError(w, http.StatusBadGateway, "api_error", "failed to read backend response")
-		return
-	}
-	if resp.StatusCode == http.StatusOK {
-		body = h.enrichModelsResponse(body)
-	}
+	body := h.mergeModelsResponses(bodies)
+	body = h.enrichModelsResponse(body)
 
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(resp.StatusCode)
+	w.WriteHeader(http.StatusOK)
 	w.Write(body)
 }
 
@@ -158,35 +189,22 @@ func (h *Handler) MessagesHandler(w http.ResponseWriter, r *http.Request) {
 
 	openaiReq, thinkingEnabled := translator.TranslateRequest(&anthropicReq)
 
-	base := strings.TrimRight(h.cfg.Backend.URL, "/")
-	if strings.HasSuffix(base, "/v1") {
-		base = base[:len(base)-3]
+	targets, err := h.modelTargets(openaiReq.Model, "/v1/chat/completions")
+	if err != nil {
+		writeBackendError(w, "anthropic", err)
+		return
 	}
-	targetURL := base + "/v1/chat/completions"
 
 	reqBody, _ := json.Marshal(openaiReq)
 	if h.cfg.Proxy.Debug {
-		log.Printf("→ %s %s model=%s stream=%v thinking=%v", r.Method, targetURL, openaiReq.Model, openaiReq.Stream, thinkingEnabled)
-	}
-
-	proxyReq, err := http.NewRequest("POST", targetURL, bytes.NewReader(reqBody))
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "api_error", err.Error())
-		return
-	}
-	proxyReq.Header.Set("Content-Type", "application/json")
-	proxyReq.Header.Set("x-request-id", requestID(r))
-
-	// Always use configured API key for backend
-	if h.cfg.Backend.APIKey != "" {
-		proxyReq.Header.Set("Authorization", "Bearer "+h.cfg.Backend.APIKey)
+		log.Printf("→ %s %s model=%s stream=%v thinking=%v", r.Method, targets[0].url, openaiReq.Model, openaiReq.Stream, thinkingEnabled)
 	}
 
 	var resp *http.Response
 	if anthropicReq.Stream {
-		resp, err = h.doStreamingBackendRequest(proxyReq)
+		resp, err = h.doStreamingBackendTargets(targets, "POST", reqBody, requestID(r))
 	} else {
-		resp, err = h.doBackendRequest(proxyReq, reqBody, true)
+		resp, err = h.doBackendTargets(targets, "POST", reqBody, requestID(r), true)
 	}
 	if err != nil {
 		writeBackendError(w, "anthropic", err)
@@ -377,34 +395,22 @@ func (h *Handler) ResponsesHandler(w http.ResponseWriter, r *http.Request) {
 	responseID := translator.GenerateResponseID()
 	openaiReq, _ := translator.TranslateResponsesRequest(&responsesReq, prevMessages)
 
-	base := strings.TrimRight(h.cfg.Backend.URL, "/")
-	if strings.HasSuffix(base, "/v1") {
-		base = base[:len(base)-3]
+	targets, err := h.modelTargets(openaiReq.Model, "/v1/chat/completions")
+	if err != nil {
+		writeBackendError(w, "responses", err)
+		return
 	}
-	targetURL := base + "/v1/chat/completions"
 
 	reqBody, _ := json.Marshal(openaiReq)
 	if h.cfg.Proxy.Debug {
-		log.Printf("→ POST %s model=%s stream=%v", targetURL, openaiReq.Model, openaiReq.Stream)
-	}
-
-	proxyReq, err := http.NewRequest("POST", targetURL, bytes.NewReader(reqBody))
-	if err != nil {
-		writeResponsesError(w, http.StatusInternalServerError, "api_error", err.Error())
-		return
-	}
-	proxyReq.Header.Set("Content-Type", "application/json")
-	proxyReq.Header.Set("x-request-id", requestID(r))
-
-	if h.cfg.Backend.APIKey != "" {
-		proxyReq.Header.Set("Authorization", "Bearer "+h.cfg.Backend.APIKey)
+		log.Printf("→ POST %s model=%s stream=%v", targets[0].url, openaiReq.Model, openaiReq.Stream)
 	}
 
 	var resp *http.Response
 	if responsesReq.Stream {
-		resp, err = h.doStreamingBackendRequest(proxyReq)
+		resp, err = h.doStreamingBackendTargets(targets, "POST", reqBody, requestID(r))
 	} else {
-		resp, err = h.doBackendRequest(proxyReq, reqBody, true)
+		resp, err = h.doBackendTargets(targets, "POST", reqBody, requestID(r), true)
 	}
 	if err != nil {
 		writeBackendError(w, "responses", err)
@@ -532,12 +538,6 @@ func (h *Handler) ChatCompletionsHandler(w http.ResponseWriter, r *http.Request)
 	}
 	defer r.Body.Close()
 
-	base := strings.TrimRight(h.cfg.Backend.URL, "/")
-	if strings.HasSuffix(base, "/v1") {
-		base = base[:len(base)-3]
-	}
-	targetURL := base + "/v1/chat/completions"
-
 	// Parse to check stream flag and apply model mapping.
 	var reqCheck struct {
 		Model  string `json:"model"`
@@ -558,29 +558,21 @@ func (h *Handler) ChatCompletionsHandler(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	if h.cfg.Proxy.Debug {
-		log.Printf("→ POST %s model=%s stream=%v", targetURL, reqCheck.Model, reqCheck.Stream)
-	}
-
-	proxyReq, err := http.NewRequest("POST", targetURL, bytes.NewReader(body))
+	targets, err := h.modelTargets(reqCheck.Model, "/v1/chat/completions")
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]interface{}{"error": map[string]string{"message": err.Error()}})
+		writeBackendError(w, "openai", err)
 		return
 	}
-	proxyReq.Header.Set("Content-Type", "application/json")
-	proxyReq.Header.Set("x-request-id", requestID(r))
 
-	if h.cfg.Backend.APIKey != "" {
-		proxyReq.Header.Set("Authorization", "Bearer "+h.cfg.Backend.APIKey)
+	if h.cfg.Proxy.Debug {
+		log.Printf("→ POST %s model=%s stream=%v", targets[0].url, reqCheck.Model, reqCheck.Stream)
 	}
 
 	var resp *http.Response
 	if reqCheck.Stream {
-		resp, err = h.doStreamingBackendRequest(proxyReq)
+		resp, err = h.doStreamingBackendTargets(targets, "POST", body, requestID(r))
 	} else {
-		resp, err = h.doBackendRequest(proxyReq, body, true)
+		resp, err = h.doBackendTargets(targets, "POST", body, requestID(r), true)
 	}
 	if err != nil {
 		writeBackendError(w, "openai", err)
@@ -670,34 +662,22 @@ func (h *Handler) GeminiHandler(w http.ResponseWriter, r *http.Request) {
 
 	openaiReq := translator.TranslateGeminiRequest(&geminiReq, model, stream)
 
-	base := strings.TrimRight(h.cfg.Backend.URL, "/")
-	if strings.HasSuffix(base, "/v1") {
-		base = base[:len(base)-3]
+	targets, err := h.modelTargets(openaiReq.Model, "/v1/chat/completions")
+	if err != nil {
+		writeBackendError(w, "gemini", err)
+		return
 	}
-	targetURL := base + "/v1/chat/completions"
 
 	reqBody, _ := json.Marshal(openaiReq)
 	if h.cfg.Proxy.Debug {
-		log.Printf("→ POST %s model=%s stream=%v", targetURL, openaiReq.Model, openaiReq.Stream)
-	}
-
-	proxyReq, err := http.NewRequest("POST", targetURL, bytes.NewReader(reqBody))
-	if err != nil {
-		writeGeminiError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	proxyReq.Header.Set("Content-Type", "application/json")
-	proxyReq.Header.Set("x-request-id", requestID(r))
-
-	if h.cfg.Backend.APIKey != "" {
-		proxyReq.Header.Set("Authorization", "Bearer "+h.cfg.Backend.APIKey)
+		log.Printf("→ POST %s model=%s stream=%v", targets[0].url, openaiReq.Model, openaiReq.Stream)
 	}
 
 	var resp *http.Response
 	if stream {
-		resp, err = h.doStreamingBackendRequest(proxyReq)
+		resp, err = h.doStreamingBackendTargets(targets, "POST", reqBody, requestID(r))
 	} else {
-		resp, err = h.doBackendRequest(proxyReq, reqBody, true)
+		resp, err = h.doBackendTargets(targets, "POST", reqBody, requestID(r), true)
 	}
 	if err != nil {
 		writeBackendError(w, "gemini", err)
@@ -748,30 +728,18 @@ func (h *Handler) geminiEmbedContent(w http.ResponseWriter, r *http.Request, bod
 
 	openaiReq := translator.TranslateGeminiEmbedContentRequest(&geminiReq, model)
 
-	base := strings.TrimRight(h.cfg.Backend.URL, "/")
-	if strings.HasSuffix(base, "/v1") {
-		base = base[:len(base)-3]
+	targets, err := h.modelTargets(openaiReq.Model, "/v1/embeddings")
+	if err != nil {
+		writeBackendError(w, "gemini", err)
+		return
 	}
-	targetURL := base + "/v1/embeddings"
 
 	reqBody, _ := json.Marshal(openaiReq)
 	if h.cfg.Proxy.Debug {
-		log.Printf("→ POST %s model=%s", targetURL, openaiReq.Model)
+		log.Printf("→ POST %s model=%s", targets[0].url, openaiReq.Model)
 	}
 
-	proxyReq, err := http.NewRequest("POST", targetURL, bytes.NewReader(reqBody))
-	if err != nil {
-		writeGeminiError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	proxyReq.Header.Set("Content-Type", "application/json")
-	proxyReq.Header.Set("x-request-id", requestID(r))
-
-	if h.cfg.Backend.APIKey != "" {
-		proxyReq.Header.Set("Authorization", "Bearer "+h.cfg.Backend.APIKey)
-	}
-
-	resp, err := h.doBackendRequest(proxyReq, reqBody, true)
+	resp, err := h.doBackendTargets(targets, "POST", reqBody, requestID(r), true)
 	if err != nil {
 		writeBackendError(w, "gemini", err)
 		return

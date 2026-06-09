@@ -10,6 +10,25 @@ backend:
   url: "https://url-to-openai-compatible-backend.com/v1"
   api_key: "ogw_live_xxx"
 
+# Optional multi-backend configuration. Keep /anthropic/v1/models and
+# /openai/v1/models public endpoints; they aggregate each backend's /v1/models.
+# When backends is set, routing uses the backend-facing model after model mapping.
+# backends:
+#   - name: primary
+#     url: "https://backend-a.com/v1"
+#     api_key: "key-a"
+#     models: ["mimo-*", "text-embedding-3-*"]
+#     weight: 2
+#     priority: 10
+#     enabled: true
+#   - name: secondary
+#     url: "https://backend-b.com/v1"
+#     api_key: "key-b"
+#     models: ["deepseek-*"]
+#     weight: 1
+#     priority: 20
+#     enabled: true
+
 proxy:
   skip_thinking: false  # Skip reasoning/thinking blocks
   debug: false          # Enable debug logging
@@ -34,6 +53,9 @@ proxy:
   rate_limit_enabled: false
   rate_limit_requests_per_minute: 60
   rate_limit_burst: 20
+  load_balance_strategy: "round_robin"  # round_robin|weighted|least_connections
+  failover_enabled: true
+  failover_max_backends: 0  # 0 means all matching backends
 
 # Model mapping: client model → backend model
 # Client sends "claude-opus-4-8" → proxy translates to "mimo-v2.5-pro"

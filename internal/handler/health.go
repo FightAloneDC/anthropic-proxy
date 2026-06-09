@@ -12,7 +12,7 @@ func (h *Handler) HealthHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	backendConfigured := h.cfg.Backend.URL != ""
+	backendConfigured := len(h.router.Backends()) > 0
 	status := "ok"
 	if !backendConfigured {
 		status = "error"
@@ -45,11 +45,25 @@ func (h *Handler) HealthHandler(w http.ResponseWriter, r *http.Request) {
 		backendBody["last_error"] = healthSnapshot.LastError
 	}
 
+	backendsBody := make([]map[string]interface{}, 0, len(h.router.Backends()))
+	for _, runtime := range h.router.Backends() {
+		backendsBody = append(backendsBody, map[string]interface{}{
+			"name":     runtime.Backend.Name,
+			"url":      runtime.Backend.URL,
+			"enabled":  runtime.Backend.Enabled,
+			"models":   runtime.Backend.Models,
+			"active":   runtime.Active(),
+			"priority": runtime.Backend.Priority,
+			"weight":   runtime.Backend.Weight,
+		})
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":             status,
 		"backend_configured": backendConfigured,
 		"backend":            backendBody,
+		"backends":           backendsBody,
 		"store":              storeBody,
 	})
 }
@@ -77,6 +91,11 @@ func (h *Handler) MetricsHandler(w http.ResponseWriter, r *http.Request) {
 		output += "# HELP anthropic_proxy_circuit_breaker_state Circuit breaker state.\n"
 		output += "# TYPE anthropic_proxy_circuit_breaker_state gauge\n"
 		output += "anthropic_proxy_circuit_breaker_state{state=\"" + state + "\"} 1\n"
+	}
+	for _, runtime := range h.router.Backends() {
+		output += "# HELP anthropic_proxy_backend_active_requests Active backend requests.\n"
+		output += "# TYPE anthropic_proxy_backend_active_requests gauge\n"
+		output += "anthropic_proxy_backend_active_requests{backend=\"" + runtime.Backend.Name + "\"} " + strconv.FormatInt(runtime.Active(), 10) + "\n"
 	}
 	w.Write([]byte(output))
 }
