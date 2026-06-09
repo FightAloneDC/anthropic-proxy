@@ -43,38 +43,45 @@ type BackendOverrides struct {
 
 // ProxyConfig holds proxy behavior settings
 type ProxyConfig struct {
-	SkipThinking                   bool   `yaml:"skip_thinking"`
-	Debug                          bool   `yaml:"debug"`
-	StoreBackend                   string `yaml:"store_backend"`     // memory or file, default memory
-	StoreFile                      string `yaml:"store_file"`        // default ./data/responses.jsonl
-	StoreTTL                       int    `yaml:"store_ttl"`         // seconds, default 3600
-	StoreMaxEntries                int    `yaml:"store_max_entries"` // default 1000
-	LogFormat                      string `yaml:"log_format"`        // "text" or "json"
-	LogLevel                       string `yaml:"log_level"`         // debug, info, warn, error
-	MetricsEnabled                 *bool  `yaml:"metrics_enabled"`   // default true
-	HealthBackendCheck             bool   `yaml:"health_backend_check"`
-	BackendHealthEnabled           bool   `yaml:"backend_health_enabled"`
-	BackendHealthInterval          int    `yaml:"backend_health_interval"`
-	BackendHealthTimeout           int    `yaml:"backend_health_timeout"`
-	CircuitBreakerEnabled          bool   `yaml:"circuit_breaker_enabled"`
-	CircuitBreakerFailureThreshold int    `yaml:"circuit_breaker_failure_threshold"`
-	CircuitBreakerCooldown         int    `yaml:"circuit_breaker_cooldown"`
-	RetryEnabled                   bool   `yaml:"retry_enabled"`
-	RetryMaxAttempts               int    `yaml:"retry_max_attempts"`
-	RetryInitialBackoffMS          int    `yaml:"retry_initial_backoff_ms"`
-	RetryMaxBackoffMS              int    `yaml:"retry_max_backoff_ms"`
-	RateLimitEnabled               bool   `yaml:"rate_limit_enabled"`
-	RateLimitRequestsPerMinute     int    `yaml:"rate_limit_requests_per_minute"`
-	RateLimitBurst                 int    `yaml:"rate_limit_burst"`
-	LoadBalanceStrategy            string `yaml:"load_balance_strategy"`
-	FailoverEnabled                bool   `yaml:"failover_enabled"`
-	FailoverMaxBackends            int    `yaml:"failover_max_backends"`
+	SkipThinking                   bool     `yaml:"skip_thinking"`
+	Debug                          bool     `yaml:"debug"`
+	StoreBackend                   string   `yaml:"store_backend"`     // memory or file, default memory
+	StoreFile                      string   `yaml:"store_file"`        // default ./data/responses.jsonl
+	StoreTTL                       int      `yaml:"store_ttl"`         // seconds, default 3600
+	StoreMaxEntries                int      `yaml:"store_max_entries"` // default 1000
+	LogFormat                      string   `yaml:"log_format"`        // "text" or "json"
+	LogLevel                       string   `yaml:"log_level"`         // debug, info, warn, error
+	MetricsEnabled                 *bool    `yaml:"metrics_enabled"`   // default true
+	HealthBackendCheck             bool     `yaml:"health_backend_check"`
+	BackendHealthEnabled           bool     `yaml:"backend_health_enabled"`
+	BackendHealthInterval          int      `yaml:"backend_health_interval"`
+	BackendHealthTimeout           int      `yaml:"backend_health_timeout"`
+	CircuitBreakerEnabled          bool     `yaml:"circuit_breaker_enabled"`
+	CircuitBreakerFailureThreshold int      `yaml:"circuit_breaker_failure_threshold"`
+	CircuitBreakerCooldown         int      `yaml:"circuit_breaker_cooldown"`
+	RetryEnabled                   bool     `yaml:"retry_enabled"`
+	RetryMaxAttempts               int      `yaml:"retry_max_attempts"`
+	RetryInitialBackoffMS          int      `yaml:"retry_initial_backoff_ms"`
+	RetryMaxBackoffMS              int      `yaml:"retry_max_backoff_ms"`
+	RateLimitEnabled               bool     `yaml:"rate_limit_enabled"`
+	RateLimitRequestsPerMinute     int      `yaml:"rate_limit_requests_per_minute"`
+	RateLimitBurst                 int      `yaml:"rate_limit_burst"`
+	LoadBalanceStrategy            string   `yaml:"load_balance_strategy"`
+	FailoverEnabled                bool     `yaml:"failover_enabled"`
+	FailoverMaxBackends            int      `yaml:"failover_max_backends"`
+	FailoverStatusCodes            []int    `yaml:"failover_status_codes"`
+	FailoverStreamErrorPatterns    []string `yaml:"failover_stream_error_patterns"`
 }
 
 // ModelMap represents a single model mapping
 type ModelMap struct {
 	From string `yaml:"from"`
 	To   string `yaml:"to"`
+}
+
+// DefaultFailoverStatusCodes returns conservative retryable backend statuses.
+func DefaultFailoverStatusCodes() []int {
+	return []int{429, 502, 503, 504}
 }
 
 // GetModelMap returns the model mapping as a map[string]string
@@ -204,6 +211,9 @@ func Load() (*Config, error) {
 	if cfg.Proxy.LoadBalanceStrategy == "" {
 		cfg.Proxy.LoadBalanceStrategy = "round_robin"
 	}
+	if len(cfg.Proxy.FailoverStatusCodes) == 0 {
+		cfg.Proxy.FailoverStatusCodes = DefaultFailoverStatusCodes()
+	}
 
 	// Also check env vars as fallback
 	if cfg.Backend.URL == "" {
@@ -228,6 +238,9 @@ func Load() (*Config, error) {
 func (c *Config) NormalizeBackends() error {
 	if c.Proxy.LoadBalanceStrategy == "" {
 		c.Proxy.LoadBalanceStrategy = "round_robin"
+	}
+	if len(c.Proxy.FailoverStatusCodes) == 0 {
+		c.Proxy.FailoverStatusCodes = DefaultFailoverStatusCodes()
 	}
 	if len(c.Backends) == 0 {
 		if c.Backend.URL == "" {

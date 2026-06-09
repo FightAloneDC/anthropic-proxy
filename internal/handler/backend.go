@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 )
 
 func (h *Handler) modelCandidates(model, targetPath string) ([]string, error) {
@@ -109,7 +110,7 @@ func (h *Handler) doBackendTargets(targets []*backendTarget, method string, body
 			}
 			continue
 		}
-		if !h.cfg.Proxy.FailoverEnabled || i == len(targets)-1 || !isFailoverStatus(resp.StatusCode) {
+		if !h.cfg.Proxy.FailoverEnabled || i == len(targets)-1 || !h.isFailoverStatus(resp.StatusCode) {
 			return resp, nil
 		}
 		io.Copy(io.Discard, resp.Body)
@@ -137,7 +138,21 @@ func (h *Handler) doStreamingBackendTargets(targets []*backendTarget, method str
 			}
 			continue
 		}
-		if !h.cfg.Proxy.FailoverEnabled || i == len(targets)-1 || !isFailoverStatus(resp.StatusCode) {
+		if !h.cfg.Proxy.FailoverEnabled || i == len(targets)-1 {
+			return resp, nil
+		}
+		if h.isFailoverStatus(resp.StatusCode) {
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			continue
+		}
+		shouldFailover, err := h.prepareStreamingResponse(resp)
+		if err != nil {
+			lastErr = err
+			resp.Body.Close()
+			continue
+		}
+		if !shouldFailover {
 			return resp, nil
 		}
 		io.Copy(io.Discard, resp.Body)
@@ -150,8 +165,37 @@ func cloneBody(body []byte) io.Reader {
 	return bytes.NewReader(body)
 }
 
-func isFailoverStatus(status int) bool {
-	return status == http.StatusTooManyRequests || status == http.StatusBadGateway || status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout
+func (h *Handler) isFailoverStatus(status int) bool {
+	for _, configured := range h.cfg.Proxy.FailoverStatusCodes {
+		if status == configured {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *Handler) prepareStreamingResponse(resp *http.Response) (bool, error) {
+	patterns := h.cfg.Proxy.FailoverStreamErrorPatterns
+	if len(patterns) == 0 || resp.Body == nil || resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return false, nil
+	}
+	const maxInspectBytes = 16 * 1024
+	buf := make([]byte, maxInspectBytes)
+	n, err := resp.Body.Read(buf)
+	if err != nil && err != io.EOF {
+		return false, err
+	}
+	prefix := buf[:n]
+	bodyText := string(prefix)
+	for _, pattern := range patterns {
+		if pattern != "" && strings.Contains(bodyText, pattern) {
+			return true, nil
+		}
+	}
+	if n > 0 {
+		resp.Body = io.NopCloser(io.MultiReader(bytes.NewReader(prefix), resp.Body))
+	}
+	return false, nil
 }
 
 type noBackendForModelError struct{ model string }

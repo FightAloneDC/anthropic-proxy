@@ -51,6 +51,15 @@ func TestNormalizeBackendsAppliesDefaults(t *testing.T) {
 	if cfg.Proxy.LoadBalanceStrategy != "round_robin" {
 		t.Fatalf("strategy = %q", cfg.Proxy.LoadBalanceStrategy)
 	}
+	wantStatusCodes := []int{429, 502, 503, 504}
+	if len(cfg.Proxy.FailoverStatusCodes) != len(wantStatusCodes) {
+		t.Fatalf("failover status codes = %#v", cfg.Proxy.FailoverStatusCodes)
+	}
+	for i, want := range wantStatusCodes {
+		if cfg.Proxy.FailoverStatusCodes[i] != want {
+			t.Fatalf("failover status codes = %#v", cfg.Proxy.FailoverStatusCodes)
+		}
+	}
 }
 
 func TestNormalizeBackendsRejectsInvalidBackends(t *testing.T) {

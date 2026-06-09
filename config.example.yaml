@@ -56,6 +56,14 @@ proxy:
   load_balance_strategy: "round_robin"  # round_robin|weighted|least_connections
   failover_enabled: true
   failover_max_backends: 0  # 0 means all matching backends
+  failover_status_codes: [429, 502, 503, 504]
+  failover_stream_error_patterns: []
+  # For aggressive multi-provider failover, consider:
+  # failover_status_codes: [401, 403, 408, 429, 500, 502, 503, 504]
+  # failover_stream_error_patterns:
+  #   - "Concurrency limit exceeded"
+  #   - "insufficient quota"
+  #   - "too many requests"
 
 # Model mapping: client model → backend model
 # Client sends "claude-opus-4-8" → proxy translates to "mimo-v2.5-pro"

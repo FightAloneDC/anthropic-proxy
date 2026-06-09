@@ -85,6 +85,94 @@ func TestChatCompletionsHandlerFailsOverRetryableStatus(t *testing.T) {
 	}
 }
 
+func TestChatCompletionsHandlerFailsOverCustomStatus(t *testing.T) {
+	primaryHits := 0
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		primaryHits++
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"message":"bad provider key"}}`))
+	}))
+	defer primary.Close()
+
+	secondaryHits := 0
+	secondary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondaryHits++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer secondary.Close()
+
+	h := New(&config.Config{
+		Backends: []config.BackendConfig{
+			{Name: "primary", URL: primary.URL, Models: []string{"mimo-*"}, Weight: 1},
+			{Name: "secondary", URL: secondary.URL, Models: []string{"mimo-*"}, Weight: 1},
+		},
+		Proxy: config.ProxyConfig{LoadBalanceStrategy: "round_robin", FailoverEnabled: true, RetryMaxAttempts: 1, FailoverStatusCodes: []int{401}},
+	}, store.New(0, 0))
+	h.executor.Config.Enabled = false
+	req := httptest.NewRequest(http.MethodPost, "/openai/v1/chat/completions", strings.NewReader(`{"model":"mimo-v2","messages":[{"role":"user","content":"hi"}]}`))
+	rec := httptest.NewRecorder()
+
+	h.ChatCompletionsHandler(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	if primaryHits != 1 || secondaryHits != 1 {
+		t.Fatalf("hits primary=%d secondary=%d", primaryHits, secondaryHits)
+	}
+}
+
+func TestChatCompletionsStreamingFailsOverErrorPattern(t *testing.T) {
+	primaryHits := 0
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		primaryHits++
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"error\":{\"message\":\"Concurrency limit exceeded for user\"}}\n\n"))
+	}))
+	defer primary.Close()
+
+	secondaryHits := 0
+	secondary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondaryHits++
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-ok\",\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer secondary.Close()
+
+	h := New(&config.Config{
+		Backends: []config.BackendConfig{
+			{Name: "primary", URL: primary.URL, Models: []string{"mimo-*"}, Weight: 1},
+			{Name: "secondary", URL: secondary.URL, Models: []string{"mimo-*"}, Weight: 1},
+		},
+		Proxy: config.ProxyConfig{
+			LoadBalanceStrategy:         "round_robin",
+			FailoverEnabled:             true,
+			RetryMaxAttempts:            1,
+			FailoverStreamErrorPatterns: []string{"Concurrency limit exceeded"},
+		},
+	}, store.New(0, 0))
+	req := httptest.NewRequest(http.MethodPost, "/openai/v1/chat/completions", strings.NewReader(`{"model":"mimo-v2","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
+	rec := httptest.NewRecorder()
+
+	h.ChatCompletionsHandler(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	if primaryHits != 1 || secondaryHits != 1 {
+		t.Fatalf("hits primary=%d secondary=%d", primaryHits, secondaryHits)
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "Concurrency limit exceeded") {
+		t.Fatalf("error pattern leaked to client: %s", body)
+	}
+	if !strings.Contains(body, "chatcmpl-ok") {
+		t.Fatalf("secondary stream missing: %s", body)
+	}
+}
+
 func TestDirectForwardHandlerRoutesJSONByModel(t *testing.T) {
 	wrong := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatalf("wrong backend received request")
