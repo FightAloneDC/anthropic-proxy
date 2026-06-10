@@ -12,6 +12,7 @@ import (
 	"anthropic-proxy/internal/daemon"
 	"anthropic-proxy/internal/handler"
 	"anthropic-proxy/internal/store"
+	proxyTLS "anthropic-proxy/internal/tls"
 )
 
 const usage = `Usage: anthropic-proxy <command> [flags]
@@ -166,21 +167,21 @@ func runServer(cfg *config.Config) {
 	h := handler.New(cfg, responseStore)
 
 	// Register routes — Anthropic
-	http.HandleFunc("/anthropic/v1/messages", h.Observe("/anthropic/v1/messages", h.RateLimit(h.MessagesHandler)))
-	http.HandleFunc("/anthropic/v1/models", h.Observe("/anthropic/v1/models", h.RateLimit(h.ModelsHandler)))
+	http.HandleFunc("/anthropic/v1/messages", h.AuthMiddleware(h.Observe("/anthropic/v1/messages", h.RateLimit(h.MessagesHandler))))
+	http.HandleFunc("/anthropic/v1/models", h.AuthMiddleware(h.Observe("/anthropic/v1/models", h.RateLimit(h.ModelsHandler))))
 
 	// Register routes — OpenAI
-	http.HandleFunc("/openai/v1/responses", h.Observe("/openai/v1/responses", h.RateLimit(h.ResponsesHandler)))
-	http.HandleFunc("/openai/v1/chat/completions", h.Observe("/openai/v1/chat/completions", h.RateLimit(h.ChatCompletionsHandler)))
-	http.HandleFunc("/openai/v1/models", h.Observe("/openai/v1/models", h.RateLimit(h.ModelsHandler)))
-	http.HandleFunc("/openai/v1/embeddings", h.Observe("/openai/v1/embeddings", h.RateLimit(h.DirectForwardHandler("/v1/embeddings"))))
-	http.HandleFunc("/openai/v1/rerank", h.Observe("/openai/v1/rerank", h.RateLimit(h.DirectForwardHandler("/v1/rerank"))))
-	http.HandleFunc("/openai/v1/audio/speech", h.Observe("/openai/v1/audio/speech", h.RateLimit(h.DirectForwardHandler("/v1/audio/speech"))))
-	http.HandleFunc("/openai/v1/audio/transcriptions", h.Observe("/openai/v1/audio/transcriptions", h.RateLimit(h.DirectForwardHandler("/v1/audio/transcriptions"))))
-	http.HandleFunc("/openai/v1/images/generations", h.Observe("/openai/v1/images/generations", h.RateLimit(h.DirectForwardHandler("/v1/images/generations"))))
+	http.HandleFunc("/openai/v1/responses", h.AuthMiddleware(h.Observe("/openai/v1/responses", h.RateLimit(h.ResponsesHandler))))
+	http.HandleFunc("/openai/v1/chat/completions", h.AuthMiddleware(h.Observe("/openai/v1/chat/completions", h.RateLimit(h.ChatCompletionsHandler))))
+	http.HandleFunc("/openai/v1/models", h.AuthMiddleware(h.Observe("/openai/v1/models", h.RateLimit(h.ModelsHandler))))
+	http.HandleFunc("/openai/v1/embeddings", h.AuthMiddleware(h.Observe("/openai/v1/embeddings", h.RateLimit(h.DirectForwardHandler("/v1/embeddings")))))
+	http.HandleFunc("/openai/v1/rerank", h.AuthMiddleware(h.Observe("/openai/v1/rerank", h.RateLimit(h.DirectForwardHandler("/v1/rerank")))))
+	http.HandleFunc("/openai/v1/audio/speech", h.AuthMiddleware(h.Observe("/openai/v1/audio/speech", h.RateLimit(h.DirectForwardHandler("/v1/audio/speech")))))
+	http.HandleFunc("/openai/v1/audio/transcriptions", h.AuthMiddleware(h.Observe("/openai/v1/audio/transcriptions", h.RateLimit(h.DirectForwardHandler("/v1/audio/transcriptions")))))
+	http.HandleFunc("/openai/v1/images/generations", h.AuthMiddleware(h.Observe("/openai/v1/images/generations", h.RateLimit(h.DirectForwardHandler("/v1/images/generations")))))
 
 	// Register routes — Gemini
-	http.HandleFunc("/gemini/v1beta/models/", h.Observe("/gemini/v1beta/models/{model}:action", h.RateLimit(h.GeminiHandler)))
+	http.HandleFunc("/gemini/v1beta/models/", h.AuthMiddleware(h.Observe("/gemini/v1beta/models/{model}:action", h.RateLimit(h.GeminiHandler))))
 
 	// Register routes — Utility
 	http.HandleFunc("/health", h.Observe("/health", h.HealthHandler))
@@ -194,8 +195,51 @@ func runServer(cfg *config.Config) {
 		backendSummary = fmt.Sprintf("%d backends", len(backends))
 	}
 	log.Printf("anthropic-proxy listening on :%d → %s", cfg.Server.Port, backendSummary)
-	if err := http.ListenAndServe(fmt.Sprintf(":%d", cfg.Server.Port), nil); err != nil {
-		log.Fatalf("Server failed: %v", err)
-		os.Exit(1)
+
+	if cfg.Server.TLS.Enabled {
+		// Auto-generate cert if configured and files don't exist
+		if cfg.Server.TLS.AutoGenerate {
+			if _, err := os.Stat(cfg.Server.TLS.CertFile); os.IsNotExist(err) {
+				certPath, keyPath, err := proxyTLS.GenerateSelfSigned("")
+				if err != nil {
+					log.Fatalf("Failed to generate self-signed cert: %v", err)
+				}
+				cfg.Server.TLS.CertFile = certPath
+				cfg.Server.TLS.KeyFile = keyPath
+				log.Printf("Generated self-signed certificate: %s", certPath)
+			}
+		}
+
+		if cfg.Server.TLS.CertFile == "" || cfg.Server.TLS.KeyFile == "" {
+			log.Fatal("TLS enabled but cert_file and key_file not configured")
+		}
+
+		// Start HTTP redirect server
+		go func() {
+			redirectPort := cfg.Server.Port - 1
+			if redirectPort <= 0 {
+				redirectPort = 80
+			}
+			redirectMux := http.NewServeMux()
+			redirectMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+				target := fmt.Sprintf("https://%s:%d%s", r.Host, cfg.Server.Port, r.URL.RequestURI())
+				http.Redirect(w, r, target, http.StatusMovedPermanently)
+			})
+			log.Printf("HTTP redirect server on :%d → HTTPS :%d", redirectPort, cfg.Server.Port)
+			if err := http.ListenAndServe(fmt.Sprintf(":%d", redirectPort), redirectMux); err != nil {
+				log.Printf("HTTP redirect server stopped: %v", err)
+			}
+		}()
+
+		log.Printf("HTTPS server with cert: %s", cfg.Server.TLS.CertFile)
+		if err := http.ListenAndServeTLS(fmt.Sprintf(":%d", cfg.Server.Port), cfg.Server.TLS.CertFile, cfg.Server.TLS.KeyFile, nil); err != nil {
+			log.Fatalf("HTTPS server failed: %v", err)
+			os.Exit(1)
+		}
+	} else {
+		if err := http.ListenAndServe(fmt.Sprintf(":%d", cfg.Server.Port), nil); err != nil {
+			log.Fatalf("Server failed: %v", err)
+			os.Exit(1)
+		}
 	}
 }

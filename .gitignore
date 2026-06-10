@@ -18,7 +18,7 @@
 /out/
 /*.json
 /anthropic-proxy
-
+certs/
 
 #-------------------------
 # Common Go ignores

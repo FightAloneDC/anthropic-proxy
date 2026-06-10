@@ -15,13 +15,29 @@ type Config struct {
 	Backends []BackendConfig `yaml:"backends"`
 	Proxy    ProxyConfig     `yaml:"proxy"`
 	Models   []ModelMap      `yaml:"models"`
+	Auth     AuthConfig      `yaml:"auth"`
 }
 
 // ServerConfig holds server-related settings
 type ServerConfig struct {
-	Port int    `yaml:"port"`
-	Fg   bool   `yaml:"fg"`
-	Log  string `yaml:"log,omitempty"`
+	Port int       `yaml:"port"`
+	Fg   bool      `yaml:"fg"`
+	Log  string    `yaml:"log,omitempty"`
+	TLS  TLSConfig `yaml:"tls"`
+}
+
+// TLSConfig holds TLS/HTTPS settings
+type TLSConfig struct {
+	Enabled      bool   `yaml:"enabled"`
+	CertFile     string `yaml:"cert_file"`
+	KeyFile      string `yaml:"key_file"`
+	AutoGenerate bool   `yaml:"auto_generate"`
+}
+
+// AuthConfig holds API key authentication settings
+type AuthConfig struct {
+	Enabled bool     `yaml:"enabled"`
+	Keys    []string `yaml:"keys"`
 }
 
 // BackendConfig holds backend connection settings

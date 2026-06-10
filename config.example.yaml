@@ -5,6 +5,17 @@ server:
   port: 8006
   # fg: false  # Run in foreground (default: daemon mode)
   # log: "./debug-output/proxy.log"  # Optional log file path
+  tls:
+    enabled: false
+    cert_file: ""
+    key_file: ""
+    auto_generate: false  # Auto-generate self-signed cert if cert_file not exist (10 year expiry)
+
+auth:
+  enabled: false  # true = validate API key, false = skip validation
+  keys:
+    - "sk-client-1"
+    - "sk-client-2"
 
 backend:
   url: "https://url-to-openai-compatible-backend.com/v1"
