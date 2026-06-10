@@ -27,7 +27,7 @@ func (h *Handler) DirectForwardHandler(targetPath string) http.HandlerFunc {
 		var err error
 		contentType := r.Header.Get("Content-Type")
 		if h.router.Multi() && strings.HasPrefix(contentType, "application/json") {
-			body, err = io.ReadAll(r.Body)
+			body, err = io.ReadAll(io.LimitReader(r.Body, maxRequestBodySize))
 			if err != nil {
 				writeOpenAIError(w, http.StatusBadRequest, "failed to read body")
 				return

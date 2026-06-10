@@ -165,6 +165,7 @@ func runServer(cfg *config.Config) {
 
 	// Create handler
 	h := handler.New(cfg, responseStore)
+	defer h.Shutdown()
 
 	// Register routes — Anthropic
 	http.HandleFunc("/anthropic/v1/messages", h.AuthMiddleware(h.Observe("/anthropic/v1/messages", h.RateLimit(h.MessagesHandler))))

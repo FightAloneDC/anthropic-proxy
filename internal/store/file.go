@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -26,6 +27,7 @@ type FileStore struct {
 	ttl      time.Duration
 	maxSize  int
 	compactN int
+	stop     chan struct{}
 }
 
 func NewFile(path string, ttl time.Duration, maxSize int) (*FileStore, error) {
@@ -43,6 +45,7 @@ func NewFile(path string, ttl time.Duration, maxSize int) (*FileStore, error) {
 		path:    path,
 		ttl:     ttl,
 		maxSize: maxSize,
+		stop:    make(chan struct{}),
 	}
 	if err := fs.load(); err != nil {
 		return nil, err
@@ -102,10 +105,21 @@ func (fs *FileStore) Stats() Stats {
 func (fs *FileStore) Close() error {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
+	select {
+	case <-fs.stop:
+	default:
+		close(fs.stop)
+	}
 	return fs.compactLocked()
 }
 
 func (fs *FileStore) load() error {
+	// Clean up orphaned temp files from previous crashes
+	tmpPath := fs.path + ".tmp"
+	if _, err := os.Stat(tmpPath); err == nil {
+		_ = os.Remove(tmpPath)
+	}
+
 	file, err := os.Open(fs.path)
 	if errors.Is(err, os.ErrNotExist) {
 		return os.MkdirAll(filepath.Dir(fs.path), 0755)
@@ -140,20 +154,25 @@ func (fs *FileStore) cleanup(interval time.Duration) {
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	for range ticker.C {
-		fs.mu.Lock()
-		now := time.Now()
-		changed := false
-		for id, e := range fs.entries {
-			if now.Sub(e.createdAt) > fs.ttl {
-				delete(fs.entries, id)
-				changed = true
+	for {
+		select {
+		case <-ticker.C:
+			fs.mu.Lock()
+			now := time.Now()
+			changed := false
+			for id, e := range fs.entries {
+				if now.Sub(e.createdAt) > fs.ttl {
+					delete(fs.entries, id)
+					changed = true
+				}
 			}
+			if changed {
+				_ = fs.compactLocked()
+			}
+			fs.mu.Unlock()
+		case <-fs.stop:
+			return
 		}
-		if changed {
-			_ = fs.compactLocked()
-		}
-		fs.mu.Unlock()
 	}
 }
 
@@ -236,5 +255,31 @@ func (fs *FileStore) compactLocked() error {
 	if err := file.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp, fs.path)
+	if err := os.Rename(tmp, fs.path); err != nil {
+		// Fallback: copy + remove for cross-filesystem renames
+		if copyErr := copyFile(tmp, fs.path); copyErr != nil {
+			return copyErr
+		}
+		_ = os.Remove(tmp)
+	}
+	return nil
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+	return out.Sync()
 }

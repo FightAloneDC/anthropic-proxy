@@ -108,7 +108,7 @@ func translateSystem(sys interface{}) types.OpenAIMsg {
 		var parts []interface{}
 		for _, block := range s {
 			if b, ok := block.(map[string]interface{}); ok && b["type"] == "text" {
-				text := b["text"].(string)
+				text, _ := b["text"].(string)
 				texts = append(texts, text)
 				if cacheControl, ok := b["cache_control"]; ok && cacheControl != nil {
 					hasCacheControl = true
@@ -153,7 +153,7 @@ func translateMessages(msg types.AnthropicMsg) []types.OpenAIMsg {
 
 			switch b["type"] {
 			case "text":
-				text := b["text"].(string)
+				text, _ := b["text"].(string)
 				if cacheControl, ok := b["cache_control"]; ok && cacheControl != nil {
 					// Switch to multi-part format to preserve cache_control
 					if existing, ok := oaiMsg.Content.(string); ok && existing != "" {
@@ -183,7 +183,7 @@ func translateMessages(msg types.AnthropicMsg) []types.OpenAIMsg {
 					case "base64":
 						imageURL = fmt.Sprintf("data:%s;base64,%s", source["media_type"], source["data"])
 					case "url":
-						imageURL = source["url"].(string)
+						imageURL, _ = source["url"].(string)
 					}
 					if imageURL != "" {
 						if oaiMsg.Content == nil {
@@ -226,19 +226,22 @@ func translateMessages(msg types.AnthropicMsg) []types.OpenAIMsg {
 
 			case "tool_use":
 				inputJSON, _ := json.Marshal(b["input"])
+				id, _ := b["id"].(string)
+				name, _ := b["name"].(string)
 				oaiMsg.ToolCalls = append(oaiMsg.ToolCalls, types.ToolCall{
-					ID:   b["id"].(string),
+					ID:   id,
 					Type: "function",
 					Function: types.FunctionCall{
-						Name:      b["name"].(string),
+						Name:      name,
 						Arguments: string(inputJSON),
 					},
 				})
 
 			case "tool_result":
+				toolUseID, _ := b["tool_use_id"].(string)
 				toolMsg := types.OpenAIMsg{
 					Role:       "tool",
-					ToolCallID: b["tool_use_id"].(string),
+					ToolCallID: toolUseID,
 				}
 				switch c := b["content"].(type) {
 				case string:

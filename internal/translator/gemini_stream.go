@@ -81,6 +81,8 @@ func (st *GeminiStreamTranslator) ProcessChunk(chunk *types.OpenAIChunk) {
 				},
 			}}})
 		}
+		st.toolCallNames = map[int]string{}
+		st.toolCallArgs = map[int]string{}
 
 		st.emit(types.GeminiResponse{Candidates: []types.GeminiCandidate{{
 			Index:        ch.Index,

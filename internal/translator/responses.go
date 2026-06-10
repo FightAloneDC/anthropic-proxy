@@ -2,6 +2,7 @@ package translator
 
 import (
 	"fmt"
+	"sync/atomic"
 
 	"anthropic-proxy/internal/types"
 )
@@ -485,8 +486,7 @@ func GenerateResponseID() string {
 var idSeq int64
 
 func idCounter() int64 {
-	idSeq++
-	return idSeq
+	return atomic.AddInt64(&idSeq, 1)
 }
 
 // StoredResponseToOutputText extracts all output text from a stored response

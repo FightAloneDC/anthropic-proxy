@@ -22,6 +22,7 @@ type ResponseStore struct {
 	entries map[string]*entry
 	ttl     time.Duration
 	maxSize int
+	stop    chan struct{}
 }
 
 type entry struct {
@@ -47,6 +48,7 @@ func NewMemory(ttl time.Duration, maxSize int) *ResponseStore {
 		entries: make(map[string]*entry),
 		ttl:     ttl,
 		maxSize: maxSize,
+		stop:    make(chan struct{}),
 	}
 
 	// Background cleanup
@@ -94,15 +96,20 @@ func (s *ResponseStore) cleanup(interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		s.mu.Lock()
-		now := time.Now()
-		for id, e := range s.entries {
-			if now.Sub(e.createdAt) > s.ttl {
-				delete(s.entries, id)
+	for {
+		select {
+		case <-ticker.C:
+			s.mu.Lock()
+			now := time.Now()
+			for id, e := range s.entries {
+				if now.Sub(e.createdAt) > s.ttl {
+					delete(s.entries, id)
+				}
 			}
+			s.mu.Unlock()
+		case <-s.stop:
+			return
 		}
-		s.mu.Unlock()
 	}
 }
 
@@ -150,5 +157,10 @@ func (s *ResponseStore) Stats() Stats {
 }
 
 func (s *ResponseStore) Close() error {
+	select {
+	case <-s.stop:
+	default:
+		close(s.stop)
+	}
 	return nil
 }

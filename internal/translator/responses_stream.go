@@ -126,14 +126,16 @@ func (st *ResponsesStreamTranslator) handleToolCalls(toolCalls []types.ToolCallD
 		}
 		if tc.Function.Arguments != "" {
 			// Stream arguments
-			idx := len(st.toolCalls) - 1
-			st.toolCalls[idx].arguments += tc.Function.Arguments
+			if len(st.toolCalls) > 0 {
+				idx := len(st.toolCalls) - 1
+				st.toolCalls[idx].arguments += tc.Function.Arguments
 
-			st.emit("response.function_call_arguments.delta", types.ResponseFunctionCallArgumentsDeltaEvent{
-				Type:        "response.function_call_arguments.delta",
-				OutputIndex: idx + st.outputIndexOffset(),
-				Delta:       tc.Function.Arguments,
-			})
+				st.emit("response.function_call_arguments.delta", types.ResponseFunctionCallArgumentsDeltaEvent{
+					Type:        "response.function_call_arguments.delta",
+					OutputIndex: idx + st.outputIndexOffset(),
+					Delta:       tc.Function.Arguments,
+				})
+			}
 		}
 	}
 }

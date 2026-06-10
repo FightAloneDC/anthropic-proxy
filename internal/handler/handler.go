@@ -19,6 +19,11 @@ import (
 	"anthropic-proxy/internal/types"
 )
 
+const (
+	maxRequestBodySize  = 10 << 20 // 10 MB
+	maxResponseBodySize = 100 << 20 // 100 MB
+)
+
 // Handler holds the HTTP handlers for the proxy
 type Handler struct {
 	cfg      *config.Config
@@ -31,6 +36,16 @@ type Handler struct {
 	health   *reliability.HealthMonitor
 	executor *reliability.BackendExecutor
 	router   *backend.Router
+}
+
+// Shutdown stops background goroutines (health monitor, rate limiter cleanup).
+func (h *Handler) Shutdown() {
+	if h.health != nil {
+		h.health.Stop()
+	}
+	if h.limiter != nil {
+		h.limiter.Stop()
+	}
 }
 
 // New creates a new Handler instance
@@ -123,7 +138,7 @@ func (h *Handler) ModelsHandler(w http.ResponseWriter, r *http.Request) {
 			lastStatus = http.StatusBadGateway
 			continue
 		}
-		body, err := io.ReadAll(resp.Body)
+		body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodySize))
 		resp.Body.Close()
 		if err != nil {
 			lastStatus = http.StatusBadGateway
@@ -165,7 +180,7 @@ func (h *Handler) MessagesHandler(w http.ResponseWriter, r *http.Request) {
 		log.Printf("← %s %s x-api-key=%s anthropic-version=%s", r.Method, r.URL.Path, maskKey(apiKey), anthropicVersion)
 	}
 
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBodySize))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "failed to read body")
 		return
@@ -248,7 +263,7 @@ func writeError(w http.ResponseWriter, status int, errType, message string) {
 }
 
 func (h *Handler) nonStreamResponse(w http.ResponseWriter, resp *http.Response, anthropicVersion string) {
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodySize))
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "api_error", "failed to read backend response")
 		return
@@ -367,7 +382,7 @@ func (h *Handler) ResponsesHandler(w http.ResponseWriter, r *http.Request) {
 		log.Printf("← %s %s", r.Method, r.URL.Path)
 	}
 
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBodySize))
 	if err != nil {
 		writeResponsesError(w, http.StatusBadRequest, "invalid_request_error", "failed to read body")
 		return
@@ -441,7 +456,7 @@ func (h *Handler) ResponsesHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) responsesNonStreamResponse(w http.ResponseWriter, resp *http.Response, responseID string) {
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodySize))
 	if err != nil {
 		writeResponsesError(w, http.StatusBadGateway, "api_error", "failed to read backend response")
 		return
@@ -549,7 +564,7 @@ func (h *Handler) ChatCompletionsHandler(w http.ResponseWriter, r *http.Request)
 		log.Printf("← %s %s (direct forward)", r.Method, r.URL.Path)
 	}
 
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBodySize))
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
@@ -650,7 +665,7 @@ func (h *Handler) GeminiHandler(w http.ResponseWriter, r *http.Request) {
 		log.Printf("← %s %s model=%s action=%s", r.Method, r.URL.Path, model, action)
 	}
 
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBodySize))
 	if err != nil {
 		writeGeminiError(w, http.StatusBadRequest, "failed to read body")
 		return
@@ -773,7 +788,7 @@ func (h *Handler) geminiEmbedContent(w http.ResponseWriter, r *http.Request, bod
 		return
 	}
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodySize))
 	if err != nil {
 		writeGeminiError(w, http.StatusBadGateway, "failed to read backend response")
 		return
@@ -796,7 +811,7 @@ func (h *Handler) geminiEmbedContent(w http.ResponseWriter, r *http.Request, bod
 }
 
 func (h *Handler) geminiNonStreamResponse(w http.ResponseWriter, resp *http.Response) {
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodySize))
 	if err != nil {
 		writeGeminiError(w, http.StatusBadGateway, "failed to read backend response")
 		return

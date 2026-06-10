@@ -16,6 +16,7 @@ type RateLimiter struct {
 	buckets  map[string]*bucket
 	now      func() time.Time
 	interval time.Duration
+	stop     chan struct{}
 }
 
 type bucket struct {
@@ -31,14 +32,19 @@ func NewRateLimiter(enabled bool, requestsPerMinute, burst int) *RateLimiter {
 	if burst <= 0 {
 		burst = requestsPerMinute
 	}
-	return &RateLimiter{
+	rl := &RateLimiter{
 		enabled:  enabled,
 		rate:     float64(requestsPerMinute) / 60.0,
 		burst:    float64(burst),
 		buckets:  map[string]*bucket{},
 		now:      time.Now,
 		interval: time.Minute,
+		stop:     make(chan struct{}),
 	}
+	if enabled {
+		go rl.cleanupLoop()
+	}
+	return rl
 }
 
 func (rl *RateLimiter) Allow(r *http.Request) bool {
@@ -84,6 +90,30 @@ func (rl *RateLimiter) Cleanup() {
 
 func (rl *RateLimiter) Enabled() bool {
 	return rl != nil && rl.enabled
+}
+
+func (rl *RateLimiter) Stop() {
+	if rl == nil || !rl.enabled {
+		return
+	}
+	select {
+	case <-rl.stop:
+	default:
+		close(rl.stop)
+	}
+}
+
+func (rl *RateLimiter) cleanupLoop() {
+	ticker := time.NewTicker(rl.interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			rl.Cleanup()
+		case <-rl.stop:
+			return
+		}
+	}
 }
 
 func ClientIP(r *http.Request) string {
