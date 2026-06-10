@@ -27,7 +27,17 @@ func TranslateGeminiRequest(req *types.GeminiRequest, model string, stream bool)
 			oai.Stop = req.GenerationConfig.StopSequences
 		}
 		if req.GenerationConfig.ResponseMIMEType == "application/json" {
-			oai.ResponseFormat = map[string]string{"type": "json_object"}
+			if req.GenerationConfig.ResponseSchema != nil {
+				oai.ResponseFormat = map[string]interface{}{
+					"type": "json_schema",
+					"json_schema": map[string]interface{}{
+						"name":   "response",
+						"schema": req.GenerationConfig.ResponseSchema,
+					},
+				}
+			} else {
+				oai.ResponseFormat = map[string]string{"type": "json_object"}
+			}
 		}
 	}
 

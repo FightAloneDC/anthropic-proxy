@@ -5,19 +5,20 @@ package types
 // ============================================================
 
 type AnthropicRequest struct {
-	Model         string             `json:"model"`
-	MaxTokens     int                `json:"max_tokens"`
-	Messages      []AnthropicMsg     `json:"messages"`
-	System        interface{}        `json:"system,omitempty"`
-	Stream        bool               `json:"stream,omitempty"`
-	Temperature   *float64           `json:"temperature,omitempty"`
-	TopP          *float64           `json:"top_p,omitempty"`
-	TopK          *int               `json:"top_k,omitempty"`
-	StopSequences []string           `json:"stop_sequences,omitempty"`
-	Tools         []AnthropicTool    `json:"tools,omitempty"`
-	ToolChoice    interface{}        `json:"tool_choice,omitempty"`
-	Thinking      *ThinkingConfig    `json:"thinking,omitempty"`
-	Metadata      *AnthropicMetadata `json:"metadata,omitempty"`
+	Model          string             `json:"model"`
+	MaxTokens      int                `json:"max_tokens"`
+	Messages       []AnthropicMsg     `json:"messages"`
+	System         interface{}        `json:"system,omitempty"`
+	Stream         bool               `json:"stream,omitempty"`
+	Temperature    *float64           `json:"temperature,omitempty"`
+	TopP           *float64           `json:"top_p,omitempty"`
+	TopK           *int               `json:"top_k,omitempty"`
+	StopSequences  []string           `json:"stop_sequences,omitempty"`
+	Tools          []AnthropicTool    `json:"tools,omitempty"`
+	ToolChoice     interface{}        `json:"tool_choice,omitempty"`
+	Thinking       *ThinkingConfig    `json:"thinking,omitempty"`
+	Metadata       *AnthropicMetadata `json:"metadata,omitempty"`
+	ResponseFormat interface{}        `json:"response_format,omitempty"`
 }
 
 type ThinkingConfig struct {
@@ -35,17 +36,18 @@ type AnthropicMsg struct {
 }
 
 type ContentBlock struct {
-	Type      string      `json:"type"`
-	Text      string      `json:"text,omitempty"`
-	ID        string      `json:"id,omitempty"`
-	Name      string      `json:"name,omitempty"`
-	Input     interface{} `json:"input,omitempty"`
-	ToolUseID string      `json:"tool_use_id,omitempty"`
-	Content   interface{} `json:"content,omitempty"`
-	IsError   bool        `json:"is_error,omitempty"`
-	Source    interface{} `json:"source,omitempty"`
-	Thinking  string      `json:"thinking,omitempty"`
-	Signature string      `json:"signature,omitempty"`
+	Type         string      `json:"type"`
+	Text         string      `json:"text,omitempty"`
+	ID           string      `json:"id,omitempty"`
+	Name         string      `json:"name,omitempty"`
+	Input        interface{} `json:"input,omitempty"`
+	ToolUseID    string      `json:"tool_use_id,omitempty"`
+	Content      interface{} `json:"content,omitempty"`
+	IsError      bool        `json:"is_error,omitempty"`
+	Source       interface{} `json:"source,omitempty"`
+	Thinking     string      `json:"thinking,omitempty"`
+	Signature    string      `json:"signature,omitempty"`
+	CacheControl interface{} `json:"cache_control,omitempty"`
 }
 
 type AnthropicTool struct {

@@ -11,6 +11,7 @@ import (
 type ResponsesStreamTranslator struct {
 	started        bool
 	finished       bool
+	finalResp      *types.ResponsesResponse
 	responseID     string
 	model          string
 	outputIndex    int
@@ -290,6 +291,7 @@ func (st *ResponsesStreamTranslator) finish(usage *types.OpenAIUsage) {
 		Usage:     st.buildUsage(usage),
 	}
 
+	st.finalResp = resp
 	st.emit("response.completed", types.ResponseCompletedEvent{
 		Type:     "response.completed",
 		Response: resp,
@@ -307,7 +309,7 @@ func (st *ResponsesStreamTranslator) outputIndexOffset() int {
 }
 
 func (st *ResponsesStreamTranslator) buildOutput() []types.ResponseOutputItem {
-	var output []types.ResponseOutputItem
+	output := []types.ResponseOutputItem{}
 
 	if st.hasText {
 		output = append(output, types.ResponseOutputItem{
@@ -349,6 +351,11 @@ func (st *ResponsesStreamTranslator) buildUsage(usage *types.OpenAIUsage) *types
 		}
 	}
 	return u
+}
+
+// FinalResponse returns the accumulated ResponsesResponse from the stream.
+func (st *ResponsesStreamTranslator) FinalResponse() *types.ResponsesResponse {
+	return st.finalResp
 }
 
 func contains(s, substr string) bool {

@@ -10,6 +10,7 @@ type GeminiRequest struct {
 	Tools             []GeminiTool            `json:"tools,omitempty"`
 	GenerationConfig  *GeminiGenerationConfig `json:"generationConfig,omitempty"`
 	SafetySettings    []GeminiSafetySetting   `json:"safetySettings,omitempty"`
+	CachedContent     string                  `json:"cachedContent,omitempty"`
 }
 
 type GeminiContent struct {
@@ -19,6 +20,7 @@ type GeminiContent struct {
 
 type GeminiPart struct {
 	Text             string                  `json:"text,omitempty"`
+	Thought          bool                    `json:"thought,omitempty"`
 	InlineData       *GeminiInlineData       `json:"inlineData,omitempty"`
 	FileData         *GeminiFileData         `json:"fileData,omitempty"`
 	FunctionCall     *GeminiFunctionCall     `json:"functionCall,omitempty"`

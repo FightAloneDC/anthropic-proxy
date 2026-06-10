@@ -23,8 +23,8 @@ func TranslateGeminiResponse(resp *types.OpenAIResponse) *types.GeminiResponse {
 		if text, ok := ch.Message.Content.(string); ok && text != "" {
 			candidate.Content.Parts = append(candidate.Content.Parts, types.GeminiPart{Text: text})
 		}
-		if ch.Message.ReasoningContent != "" && len(candidate.Content.Parts) == 0 {
-			candidate.Content.Parts = append(candidate.Content.Parts, types.GeminiPart{Text: ch.Message.ReasoningContent})
+		if ch.Message.ReasoningContent != "" {
+			candidate.Content.Parts = append(candidate.Content.Parts, types.GeminiPart{Text: ch.Message.ReasoningContent, Thought: true})
 		}
 
 		for _, tc := range ch.Message.ToolCalls {

@@ -38,6 +38,18 @@ func TranslateRequest(req *types.AnthropicRequest) (*types.OpenAIRequest, bool) 
 		if oai.MaxTokens <= budget {
 			oai.MaxTokens = budget + 1
 		}
+		// Map budget_tokens to reasoning_effort for backends that support it
+		switch {
+		case budget <= 1024:
+			oai.ReasoningEffort = "low"
+		case budget <= 4096:
+			oai.ReasoningEffort = "medium"
+		default:
+			oai.ReasoningEffort = "high"
+		}
+	} else if thinkingEnabled && req.Thinking != nil && req.Thinking.Type == "enabled" {
+		// thinking enabled without explicit budget_tokens → default to high effort
+		oai.ReasoningEffort = "high"
 	}
 
 	// System → system message
@@ -77,6 +89,11 @@ func TranslateRequest(req *types.AnthropicRequest) (*types.OpenAIRequest, bool) 
 		oai.User = req.Metadata.UserID
 	}
 
+	// Response format
+	if req.ResponseFormat != nil {
+		oai.ResponseFormat = req.ResponseFormat
+	}
+
 	return oai, thinkingEnabled
 }
 
@@ -87,12 +104,29 @@ func translateSystem(sys interface{}) types.OpenAIMsg {
 		msg.Content = s
 	case []interface{}:
 		var texts []string
+		var hasCacheControl bool
+		var parts []interface{}
 		for _, block := range s {
 			if b, ok := block.(map[string]interface{}); ok && b["type"] == "text" {
-				texts = append(texts, b["text"].(string))
+				text := b["text"].(string)
+				texts = append(texts, text)
+				if cacheControl, ok := b["cache_control"]; ok && cacheControl != nil {
+					hasCacheControl = true
+					parts = append(parts, map[string]interface{}{
+						"type":          "text",
+						"text":          text,
+						"cache_control": cacheControl,
+					})
+				} else if hasCacheControl {
+					parts = append(parts, map[string]interface{}{"type": "text", "text": text})
+				}
 			}
 		}
-		msg.Content = strings.Join(texts, "\n")
+		if hasCacheControl {
+			msg.Content = parts
+		} else {
+			msg.Content = strings.Join(texts, "\n")
+		}
 	}
 	return msg
 }
@@ -119,11 +153,27 @@ func translateMessages(msg types.AnthropicMsg) []types.OpenAIMsg {
 
 			switch b["type"] {
 			case "text":
-				existing, _ := oaiMsg.Content.(string)
-				if existing != "" {
-					oaiMsg.Content = existing + b["text"].(string)
+				text := b["text"].(string)
+				if cacheControl, ok := b["cache_control"]; ok && cacheControl != nil {
+					// Switch to multi-part format to preserve cache_control
+					if existing, ok := oaiMsg.Content.(string); ok && existing != "" {
+						oaiMsg.Content = []interface{}{map[string]interface{}{"type": "text", "text": existing}}
+					}
+					if oaiMsg.Content == nil {
+						oaiMsg.Content = []interface{}{}
+					}
+					oaiMsg.Content = append(oaiMsg.Content.([]interface{}), map[string]interface{}{
+						"type":          "text",
+						"text":          text,
+						"cache_control": cacheControl,
+					})
 				} else {
-					oaiMsg.Content = b["text"].(string)
+					existing, _ := oaiMsg.Content.(string)
+					if existing != "" {
+						oaiMsg.Content = existing + text
+					} else {
+						oaiMsg.Content = text
+					}
 				}
 
 			case "image":
@@ -143,6 +193,34 @@ func translateMessages(msg types.AnthropicMsg) []types.OpenAIMsg {
 							"type":      "image_url",
 							"image_url": map[string]string{"url": imageURL},
 						})
+					}
+				}
+
+			case "file":
+				if source, ok := b["source"].(map[string]interface{}); ok {
+					if oaiMsg.Content == nil {
+						oaiMsg.Content = []interface{}{}
+					}
+					switch source["type"] {
+					case "base64":
+						mediaType, _ := source["media_type"].(string)
+						data, _ := source["data"].(string)
+						if data != "" {
+							oaiMsg.Content = append(oaiMsg.Content.([]interface{}), map[string]interface{}{
+								"type": "file",
+								"file": map[string]string{
+									"file_data": fmt.Sprintf("data:%s;base64,%s", mediaType, data),
+								},
+							})
+						}
+					case "url":
+						url, _ := source["url"].(string)
+						if url != "" {
+							oaiMsg.Content = append(oaiMsg.Content.([]interface{}), map[string]interface{}{
+								"type": "file",
+								"file": map[string]string{"file_url": url},
+							})
+						}
 					}
 				}
 

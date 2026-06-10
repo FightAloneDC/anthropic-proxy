@@ -258,7 +258,15 @@ func (h *Handler) nonStreamResponse(w http.ResponseWriter, resp *http.Response, 
 	body = bytes.TrimSpace(body)
 
 	var openaiResp types.OpenAIResponse
-	if err := json.Unmarshal(body, &openaiResp); err != nil {
+	if isSSEResponse(body) {
+		// Backend returned SSE format for a non-streaming request — accumulate chunks
+		if accumulated, ok := parseSSEToOpenAIResponse(body); ok {
+			openaiResp = *accumulated
+		} else {
+			writeError(w, http.StatusBadGateway, "api_error", "failed to parse backend SSE response")
+			return
+		}
+	} else if err := json.Unmarshal(body, &openaiResp); err != nil {
 		writeError(w, http.StatusBadGateway, "api_error", "failed to parse backend response")
 		return
 	}
@@ -441,7 +449,14 @@ func (h *Handler) responsesNonStreamResponse(w http.ResponseWriter, resp *http.R
 	body = bytes.TrimSpace(body)
 
 	var openaiResp types.OpenAIResponse
-	if err := json.Unmarshal(body, &openaiResp); err != nil {
+	if isSSEResponse(body) {
+		if accumulated, ok := parseSSEToOpenAIResponse(body); ok {
+			openaiResp = *accumulated
+		} else {
+			writeResponsesError(w, http.StatusBadGateway, "api_error", "failed to parse backend SSE response")
+			return
+		}
+	} else if err := json.Unmarshal(body, &openaiResp); err != nil {
 		writeResponsesError(w, http.StatusBadGateway, "api_error", "failed to parse backend response")
 		return
 	}
@@ -502,6 +517,11 @@ func (h *Handler) responsesStreamResponse(w http.ResponseWriter, resp *http.Resp
 
 	if err := scanner.Err(); err != nil {
 		log.Printf("stream read error: %v", err)
+	}
+
+	// Store for previous_response_id support
+	if finalResp := streamTranslator.FinalResponse(); finalResp != nil {
+		h.store.Store(responseID, finalResp)
 	}
 }
 
@@ -761,7 +781,10 @@ func (h *Handler) geminiEmbedContent(w http.ResponseWriter, r *http.Request, bod
 	respBody = bytes.TrimSpace(respBody)
 
 	var openaiResp types.OpenAIEmbeddingsResponse
-	if err := json.Unmarshal(respBody, &openaiResp); err != nil {
+	if isSSEResponse(respBody) {
+		writeGeminiError(w, http.StatusBadGateway, "unexpected SSE response from embeddings endpoint")
+		return
+	} else if err := json.Unmarshal(respBody, &openaiResp); err != nil {
 		writeGeminiError(w, http.StatusBadGateway, "failed to parse backend response")
 		return
 	}
@@ -781,7 +804,14 @@ func (h *Handler) geminiNonStreamResponse(w http.ResponseWriter, resp *http.Resp
 	body = bytes.TrimSpace(body)
 
 	var openaiResp types.OpenAIResponse
-	if err := json.Unmarshal(body, &openaiResp); err != nil {
+	if isSSEResponse(body) {
+		if accumulated, ok := parseSSEToOpenAIResponse(body); ok {
+			openaiResp = *accumulated
+		} else {
+			writeGeminiError(w, http.StatusBadGateway, "failed to parse backend SSE response")
+			return
+		}
+	} else if err := json.Unmarshal(body, &openaiResp); err != nil {
 		writeGeminiError(w, http.StatusBadGateway, "failed to parse backend response")
 		return
 	}

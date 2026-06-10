@@ -19,6 +19,7 @@
 /*.json
 /anthropic-proxy
 certs/
+/data/
 
 #-------------------------
 # Common Go ignores

@@ -2,7 +2,7 @@
 
 Development plan for anthropic-proxy — features, improvements, and milestones.
 
-## Current State (v2.7.0)
+## Current State (v2.9.0)
 
 - ✅ Anthropic Messages API → Chat Completions translation
 - ✅ OpenAI Responses API → Chat Completions translation
@@ -26,6 +26,13 @@ Development plan for anthropic-proxy — features, improvements, and milestones.
 - ✅ CLI subcommands (start/stop/restart/status)
 - ✅ Cross-platform builds (5 OS × multiple arch)
 - ✅ Debug logging
+- ✅ Extended thinking / reasoning_effort forwarding
+- ✅ Response format / structured output forwarding
+- ✅ Image & file content block translation
+- ✅ Prompt cache_control marker preservation
+- ✅ Non-streaming SSE compatibility detection
+- ✅ API key authentication and TLS
+- ✅ Multi-backend load balancing and failover
 
 ---
 
@@ -222,58 +229,61 @@ backends:
 
 ## v2.8.0 — Authentication & Security
 
-**Priority: Medium**
+**Priority: Medium — ✅ Implemented (except Request Sanitization)**
 
-### API Key Authentication
+### API Key Authentication ✅
 - Optional API key requirement for incoming requests
-- Per-client API keys with different permissions
-- Validate `X-Api-Key` against configured keys
+- Validate `X-Api-Key` and `Authorization: Bearer` against configured keys
+- `enabled: false` = skip validation, `enabled: true` = validate
 
 ```yaml
 auth:
-  enabled: true
+  enabled: false
   keys:
-    - key: "sk-client-1"
-      models: ["*"]
-    - key: "sk-client-2"
-      models: ["claude-*"]
+    - "sk-client-1"
+    - "sk-client-2"
 ```
 
-### TLS Support
+### TLS Support ✅
 - HTTPS termination in the proxy
 - Configurable cert/key paths
 - Auto-redirect HTTP → HTTPS
+- Auto-generate self-signed cert via `auto_generate: true` (10 year expiry)
 
-### Request Sanitization
+### Request Sanitization ❌ (deferred)
 - Strip sensitive headers before logging
 - Sanitize request bodies in debug logs
 - Configurable log redaction patterns
 
 ---
 
-## v2.9.0 — Advanced Translation
+## v2.9.0 — Advanced Translation ✅ Completed
 
 **Priority: Medium**
 
 ### Extended Thinking / Budget Tokens
-- Forward `thinking.budget_tokens` to backend reasoning config
-- Map `reasoning.effort` (low/medium/high/xhigh) to backend equivalents
-- Thinking block summarization for long reasoning
+- Forward `thinking.budget_tokens` → `reasoning_effort` (low/medium/high) to backend
+- Forward `reasoning.effort` in Responses API to backend
+- Non-streaming: `reasoning_content` → thinking content blocks (Anthropic) / thought parts (Gemini)
+- Streaming: `delta.reasoning` → thought parts (Gemini)
 
 ### Response Format / Structured Output
-- Forward `response_format` / `text.format` to backend
-- JSON Schema validation
-- `json_object` and `json_schema` modes
+- Forward `response_format` from Anthropic request to backend
+- Forward `responseSchema` from Gemini as `json_schema` format
 
 ### Image & File Support
-- Forward `input_image` in Responses API
-- Forward `input_file` (PDF, etc.) if backend supports
-- Base64 and URL image sources
+- Anthropic `file` content blocks (base64/url) → OpenAI file format
+- Responses API `input_file` (file_data, file_id, filename) → Chat Completions
 
 ### Prompt Caching
-- Forward `cache_control` markers to backend
-- Map cache token usage in responses
-- Anthropic-specific cache headers
+- Preserve `cache_control` markers in Anthropic messages/system blocks
+- Forward `cachedContent` in Gemini requests
+
+### Reliability Fixes
+- Non-streaming SSE detection: handle backend returning SSE for stream=false
+- Response store populated during Responses API streaming (previous_response_id)
+- Responses streaming `response.completed` output initialized as empty slice (not null)
+- Fix `translateMessages` panic on string→[]interface{} type assertion
 
 ---
 
@@ -350,8 +360,8 @@ middleware:
 | v2.5.0 | Hardening | Validation, structured logging, metrics, health check |
 | v2.6.0 | Reliability | Persistent store, circuit breaker, retry, rate limiting |
 | v2.7.0 | Multi-Backend | Multiple backends, load balancing, failover |
-| v2.8.0 | Security | API key auth, TLS, request sanitization |
-| v2.9.0 | Advanced Translation | Extended thinking, structured output, image/file support |
+| v2.8.0 | Security | API key auth ✅, TLS ✅, request sanitization ❌ (deferred) |
+| v2.9.0 | Advanced Translation | Extended thinking, structured output, image/file, prompt caching, SSE compat ✅ |
 | v3.0.0 | Plugin Architecture | Middleware system, custom translators, web UI |
 
 ---

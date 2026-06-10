@@ -33,6 +33,16 @@ func (st *GeminiStreamTranslator) ProcessChunk(chunk *types.OpenAIChunk) {
 
 	ch := chunk.Choices[0]
 
+	if ch.Delta.Reasoning != "" {
+		st.emit(types.GeminiResponse{Candidates: []types.GeminiCandidate{{
+			Index: ch.Index,
+			Content: &types.GeminiContent{
+				Role:  "model",
+				Parts: []types.GeminiPart{{Text: ch.Delta.Reasoning, Thought: true}},
+			},
+		}}})
+	}
+
 	if ch.Delta.Content != "" {
 		st.emit(types.GeminiResponse{Candidates: []types.GeminiCandidate{{
 			Index: ch.Index,

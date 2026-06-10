@@ -26,6 +26,11 @@ func TranslateResponsesRequest(req *types.ResponsesRequest, prevMessages []types
 
 	reasoningEnabled := req.Reasoning != nil
 
+	// Forward reasoning.effort to backend
+	if req.Reasoning != nil && req.Reasoning.Effort != "" {
+		oai.ReasoningEffort = req.Reasoning.Effort
+	}
+
 	// Instructions → system message
 	if req.Instructions != "" {
 		oai.Messages = append(oai.Messages, types.OpenAIMsg{
@@ -198,6 +203,30 @@ func translateMessageContentBlocks(role string, blocks []interface{}) []types.Op
 				contentParts = append(contentParts, map[string]interface{}{
 					"type":      "image_url",
 					"image_url": urlObj,
+				})
+			}
+
+		case "input_file":
+			fileData, _ := b["file_data"].(string)
+			fileID, _ := b["file_id"].(string)
+			filename, _ := b["filename"].(string)
+			if fileData != "" {
+				fileObj := map[string]string{"file_data": fileData}
+				if filename != "" {
+					fileObj["filename"] = filename
+				}
+				contentParts = append(contentParts, map[string]interface{}{
+					"type": "file",
+					"file": fileObj,
+				})
+			} else if fileID != "" {
+				fileObj := map[string]string{"file_id": fileID}
+				if filename != "" {
+					fileObj["filename"] = filename
+				}
+				contentParts = append(contentParts, map[string]interface{}{
+					"type": "file",
+					"file": fileObj,
 				})
 			}
 		}

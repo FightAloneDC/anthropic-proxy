@@ -22,6 +22,11 @@ func TranslateResponse(resp *types.OpenAIResponse) *types.AnthropicResponse {
 		// Finish reason → stop reason
 		ar.StopReason = MapFinishReason(ch.FinishReason)
 
+		// Reasoning content → thinking blocks (before text content)
+		if ch.Message.ReasoningContent != "" {
+			ar.Content = append(ar.Content, types.ContentBlock{Type: "thinking", Thinking: ch.Message.ReasoningContent})
+		}
+
 		// Text content
 		if ch.Message.Content != nil {
 			if text, ok := ch.Message.Content.(string); ok && text != "" {
