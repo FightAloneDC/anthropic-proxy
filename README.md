@@ -20,6 +20,12 @@ OpenAI Chat SDK      →  /openai/v1/chat/completions                   ──  
 - **Streaming** — SSE streaming for all endpoints
 - **Tool calling** — bidirectional function/tool translation
 - **Reasoning/thinking blocks** — maps `reasoning` ↔ `thinking` blocks
+- **Extended thinking / reasoning_effort** — forward `thinking.budget_tokens` and `reasoning.effort` to backend
+- **Response format / structured output** — forward `response_format` and `responseSchema` to backend
+- **Image & file content blocks** — translate base64/url file blocks across API formats
+- **Prompt cache control** — preserve `cache_control` markers and `cachedContent` references
+- **Non-streaming SSE compat** — detect and handle SSE responses for `stream=false` requests
+- **API key auth & TLS** — optional API key validation and HTTPS with auto-generated self-signed certs
 - **Model mapping** — remap model names to backend equivalents
 - **Multi-backend routing** — route mapped models across multiple backends with load balancing and failover
 - **`previous_response_id`** — memory or file-backed response store for conversation continuity
@@ -169,6 +175,19 @@ models:
     to: "your-backend-model"
   - from: "claude-sonnet-4-6"
     to: "your-backend-model"
+
+auth:
+  enabled: false
+  keys:
+    - "sk-client-1"
+    - "sk-client-2"
+
+tls:
+  enabled: false
+  cert_file: ""
+  key_file: ""
+  auto_redirect: true         # Redirect HTTP → HTTPS
+  auto_generate: false        # Auto-generate self-signed cert (10 year expiry)
 ```
 
 ### Environment variables
@@ -551,7 +570,10 @@ curl http://localhost:8006/openai/v1/images/generations \
 | `tools[].input_schema` | `tools[].function.parameters` |
 | `top_k` | `top_k` |
 | `metadata.user_id` | `user` |
-| `thinking.budget_tokens` | adjusts `max_tokens` |
+| `thinking.budget_tokens` | `reasoning_effort` (low/medium/high) + adjusts `max_tokens` |
+| `response_format` | `response_format` (forwarded) |
+| `content[].cache_control` | preserved as-is in content blocks |
+| `content[].type: "file"` | `file` type content (base64/url) |
 
 **Response:**
 
@@ -563,6 +585,7 @@ curl http://localhost:8006/openai/v1/images/generations \
 | `finish_reason: "length"` | `stop_reason: "max_tokens"` |
 | `finish_reason: "tool_calls"` | `stop_reason: "tool_use"` |
 | `reasoning` (streaming) | `thinking` blocks |
+| `reasoning_content` (non-streaming) | `thinking` blocks |
 | `usage.prompt_tokens` | `usage.input_tokens` |
 | `usage.completion_tokens` | `usage.output_tokens` |
 | `usage.prompt_cache_hit_tokens` | `usage.cache_read_input_tokens` |
@@ -580,6 +603,8 @@ curl http://localhost:8006/openai/v1/images/generations \
 | `tools[]` (flat) | `tools[]` (nested `function` wrapper) |
 | `tool_choice` | `tool_choice` |
 | `text.format` | `response_format` |
+| `reasoning.effort` | `reasoning_effort` (forwarded) |
+| `input[].type: "input_file"` | `file` type content (base64/filename) |
 | `previous_response_id` | prepends stored messages |
 
 **Response:**
@@ -611,6 +636,8 @@ curl http://localhost:8006/openai/v1/images/generations \
 | `generationConfig.temperature` | `temperature` |
 | `generationConfig.topP` | `top_p` |
 | `generationConfig.topK` | `top_k` |
+| `generationConfig.responseSchema` | `response_format` (json_schema) |
+| `cachedContent` | forwarded as-is |
 | `safetySettings` | accepted but ignored |
 
 **Response:**
@@ -619,6 +646,7 @@ curl http://localhost:8006/openai/v1/images/generations \
 |------------------|--------|
 | `choices[].message.content` | `candidates[].content.parts[].text` |
 | `choices[].message.tool_calls` | `parts[].functionCall` |
+| `reasoning_content` | `parts[].thought: true` |
 | `finish_reason: "stop"` | `finishReason: "STOP"` |
 | `finish_reason: "length"` | `finishReason: "MAX_TOKENS"` |
 | `usage.prompt_tokens` | `usageMetadata.promptTokenCount` |
@@ -656,7 +684,8 @@ anthropic-proxy/
 │   │   └── stop_unix.go
 │   ├── handler/
 │   │   ├── handler.go       # HTTP handlers for translated endpoints
-│   │   └── forward.go       # Direct-forward handlers for OpenAI-compatible endpoints
+│   │   ├── forward.go       # Direct-forward handlers for OpenAI-compatible endpoints
+│   │   └── sse_compat.go    # SSE format detection and chunk accumulation
 │   ├── store/
 │   │   └── store.go         # In-memory response store (TTL-based)
 │   ├── translator/
@@ -677,7 +706,9 @@ anthropic-proxy/
 │       └── embeddings.go    # OpenAI Embeddings API types
 ├── docs/
 │   ├── ARCHITECTURE.md      # Internal design, translation patterns
-│   └── TROUBLESHOOTING.md   # Known issues, fixes, debugging tips
+│   ├── TROUBLESHOOTING.md   # Known issues, fixes, debugging tips
+│   ├── ROADMAP.md           # Development plan, features, milestones
+│   └── ADVANCED_TRANSLATION_V2.9.0_PLAN.md  # v2.9.0 implementation plan
 ├── build/                   # Build output (gitignored)
 ├── config.example.yaml      # Example configuration
 ├── go.mod
