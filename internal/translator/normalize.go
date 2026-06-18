@@ -100,6 +100,7 @@ type StreamNormalizer struct {
 	contentBuffer  string // buffer content to ensure reasoning is emitted first
 	hasReasoning   bool   // track if we've seen reasoning in this stream
 	reasoningAccum string // accumulated reasoning to detect duplicates
+	openTagBuffer  string // buffer for incomplete opening tags
 }
 
 // NewStreamNormalizer creates a new stream normalizer.
@@ -119,6 +120,79 @@ func (sn *StreamNormalizer) flushContentBuffer() {
 		sn.emitContent(sn.contentBuffer)
 		sn.contentBuffer = ""
 	}
+}
+
+// findClosingTag finds the first closing tag (either <think> or <thinking>) in the string.
+// Returns the index and the length of the closing tag found.
+func findClosingTag(s string) (idx int, length int) {
+	thinkEnd := strings.Index(s, "</think>")
+	thinkTagEnd := strings.Index(s, "</thinking>")
+
+	if thinkEnd == -1 && thinkTagEnd == -1 {
+		return -1, 0
+	} else if thinkEnd == -1 {
+		return thinkTagEnd, len("</thinking>")
+	} else if thinkTagEnd == -1 {
+		return thinkEnd, len("</think>")
+	} else if thinkEnd < thinkTagEnd {
+		return thinkEnd, len("</think>")
+	}
+	return thinkTagEnd, len("</thinking>")
+}
+
+// findOpeningTag finds the first opening tag in the string.
+// Returns the index, tag type ("think" or "thinking"), and whether it was found.
+func findOpeningTag(s string) (idx int, tagType string, found bool) {
+	thinkIdx := strings.Index(s, "<think>")
+	thinkTagIdx := strings.Index(s, "<thinking>")
+
+	if thinkIdx == -1 && thinkTagIdx == -1 {
+		return -1, "", false
+	} else if thinkIdx == -1 {
+		return thinkTagIdx, "thinking", true
+	} else if thinkTagIdx == -1 {
+		return thinkIdx, "think", true
+	} else if thinkIdx < thinkTagIdx {
+		return thinkIdx, "think", true
+	}
+	return thinkTagIdx, "thinking", true
+}
+
+// isStandaloneClosingTag checks if the string starts with a closing tag
+// that has no matching opening tag before it.
+func isStandaloneClosingTag(s string) (bool, int) {
+	thinkEnd := strings.Index(s, "</think>")
+	thinkTagEnd := strings.Index(s, "</thinking>")
+
+	var idx int
+	var tagLen int
+
+	if thinkEnd == -1 && thinkTagEnd == -1 {
+		return false, 0
+	} else if thinkEnd == -1 {
+		idx = thinkTagEnd
+		tagLen = len("</thinking>")
+	} else if thinkTagEnd == -1 {
+		idx = thinkEnd
+		tagLen = len("</think>")
+	} else if thinkEnd < thinkTagEnd {
+		idx = thinkEnd
+		tagLen = len("</think>")
+	} else {
+		idx = thinkTagEnd
+		tagLen = len("</thinking>")
+	}
+
+	// Check if there's an opening tag before this closing tag
+	thinkStart := strings.Index(s, "<think>")
+	thinkTagStart := strings.Index(s, "<thinking>")
+
+	hasOpeningBefore := (thinkStart != -1 && thinkStart < idx) || (thinkTagStart != -1 && thinkTagStart < idx)
+	if hasOpeningBefore {
+		return false, 0
+	}
+
+	return true, idx + tagLen
 }
 
 // ProcessChunk processes a single chunk and emits normalized content/reasoning.
@@ -142,19 +216,14 @@ func (sn *StreamNormalizer) ProcessChunk(content string, reasoningContent string
 
 // processContentChunk handles the stateful parsing of thinking tags in content chunks.
 func (sn *StreamNormalizer) processContentChunk(chunk string) {
-	remaining := chunk
+	// Prepend any buffered incomplete opening tag
+	remaining := sn.openTagBuffer + chunk
+	sn.openTagBuffer = ""
 
 	for len(remaining) > 0 {
 		if sn.inThinkTag {
-			// Look for closing tag
-			var endTag string
-			if sn.tagType == "think" {
-				endTag = "</think>"
-			} else {
-				endTag = "</thinking>"
-			}
-
-			endIdx := strings.Index(remaining, endTag)
+			// Look for ANY closing tag (handle mismatched tags)
+			endIdx, endLen := findClosingTag(remaining)
 			if endIdx == -1 {
 				// No closing tag in this chunk - buffer everything
 				sn.tagBuffer += remaining
@@ -163,53 +232,32 @@ func (sn *StreamNormalizer) processContentChunk(chunk string) {
 
 			// Found closing tag
 			sn.tagBuffer += remaining[:endIdx]
-			sn.hasReasoning = true
-			// Flush any buffered content before emitting reasoning
-			sn.flushContentBuffer()
-			sn.emitReasoning(sn.tagBuffer)
+			// Only emit reasoning from tags if we haven't already emitted from reasoning field
+			if !sn.hasReasoning {
+				sn.flushContentBuffer()
+				sn.emitReasoning(sn.tagBuffer)
+			}
 			sn.tagBuffer = ""
 			sn.inThinkTag = false
-			remaining = remaining[endIdx+len(endTag):]
+			remaining = remaining[endIdx+endLen:]
 		} else {
 			// Remove standalone closing tags first
-			if closingTagRegex.MatchString(remaining) {
-				// Find first standalone closing tag
-				loc := closingTagRegex.FindStringIndex(remaining)
-				if loc != nil && loc[0] == 0 {
-					// Closing tag at start - remove it
-					remaining = remaining[loc[1]:]
-					continue
-				} else if loc != nil {
-					// Buffer content before closing tag
-					sn.contentBuffer += remaining[:loc[0]]
-					remaining = remaining[loc[1]:]
-					continue
-				}
+			if standalone, endPos := isStandaloneClosingTag(remaining); standalone {
+				remaining = remaining[endPos:]
+				continue
 			}
 
 			// Look for opening tags
-			thinkStart := strings.Index(remaining, "<think>")
-			thinkTagStart := strings.Index(remaining, "<thinking>")
-
-			var tagType string
-			var startIdx int
-
-			if thinkStart == -1 && thinkTagStart == -1 {
+			startIdx, tagType, found := findOpeningTag(remaining)
+			if !found {
+				// Check if remaining ends with incomplete opening tag
+				if hasIncompleteOpenTag(remaining) {
+					sn.openTagBuffer = remaining
+					return
+				}
 				// No tags found - buffer content
 				sn.contentBuffer += remaining
 				return
-			} else if thinkStart == -1 {
-				tagType = "thinking"
-				startIdx = thinkTagStart
-			} else if thinkTagStart == -1 {
-				tagType = "think"
-				startIdx = thinkStart
-			} else if thinkStart < thinkTagStart {
-				tagType = "think"
-				startIdx = thinkStart
-			} else {
-				tagType = "thinking"
-				startIdx = thinkTagStart
 			}
 
 			// Buffer content before tag
@@ -217,16 +265,12 @@ func (sn *StreamNormalizer) processContentChunk(chunk string) {
 				sn.contentBuffer += remaining[:startIdx]
 			}
 
-			// Check if closing tag is in same chunk
-			var endTag string
-			if tagType == "think" {
-				endTag = "</think>"
-			} else {
-				endTag = "</thinking>"
-			}
+			// Get content after opening tag
+			openLen := len("<" + tagType + ">")
+			tagContent := remaining[startIdx+openLen:]
 
-			tagContent := remaining[startIdx+len("<"+tagType+">"):]
-			endIdx := strings.Index(tagContent, endTag)
+			// Look for ANY closing tag (handle mismatched tags)
+			endIdx, endLen := findClosingTag(tagContent)
 
 			if endIdx == -1 {
 				// Closing tag not in this chunk
@@ -237,13 +281,37 @@ func (sn *StreamNormalizer) processContentChunk(chunk string) {
 			}
 
 			// Both tags in same chunk
-			sn.hasReasoning = true
-			// Flush any buffered content before emitting reasoning
-			sn.flushContentBuffer()
-			sn.emitReasoning(tagContent[:endIdx])
-			remaining = tagContent[endIdx+len(endTag):]
+			// Only emit reasoning from tags if we haven't already emitted from reasoning field
+			if !sn.hasReasoning {
+				sn.flushContentBuffer()
+				sn.emitReasoning(tagContent[:endIdx])
+			}
+			remaining = tagContent[endIdx+endLen:]
 		}
 	}
+}
+
+// hasIncompleteOpenTag checks if string ends with an incomplete opening tag.
+// Examples: "<thin", "<thinking", "<t", "<"
+func hasIncompleteOpenTag(s string) bool {
+	// Check for incomplete "<thinking>" or "<think>"
+	incomplete := []string{
+		"<",
+		"<t",
+		"<th",
+		"<thi",
+		"<thin",
+		"<think",
+		"<thinki",
+		"<thinkin",
+		"<thinking",
+	}
+	for _, inc := range incomplete {
+		if strings.HasSuffix(s, inc) {
+			return true
+		}
+	}
+	return false
 }
 
 // Flush should be called at the end of stream to emit any remaining buffered content.
