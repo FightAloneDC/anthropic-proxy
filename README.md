@@ -20,6 +20,7 @@ OpenAI Chat SDK      →  /openai/v1/chat/completions                   ──  
 - **Streaming** — SSE streaming for all endpoints
 - **Tool calling** — bidirectional function/tool translation
 - **Reasoning/thinking blocks** — maps `reasoning` ↔ `thinking` blocks
+- **Thinking tag normalization** — extracts `<think>` and `<thinking>` tags from content to `reasoning_content` field, handles split tags across streaming chunks
 - **Extended thinking / reasoning_effort** — forward `thinking.budget_tokens` and `reasoning.effort` to backend
 - **Response format / structured output** — forward `response_format` and `responseSchema` to backend
 - **Image & file content blocks** — translate base64/url file blocks across API formats
@@ -465,6 +466,16 @@ curl http://localhost:8006/openai/v1/responses \
 
 For reasoning models (MiMo, DeepSeek R1, o-series), the proxy automatically maps:
 
+**Thinking tag normalization:**
+
+Some backends return thinking/reasoning content in the `content` field with `<think>` or `<thinking>` tags instead of using the proper `reasoning` or `reasoning_content` field. The proxy automatically detects and normalizes these cases:
+
+- Extracts content between `<think>...</think>` or `<thinking>...</thinking>` tags
+- Moves extracted content to `reasoning_content` field
+- Removes thinking tags from `content` field
+- Handles split tags across streaming chunks (stateful parser)
+- Handles mismatched opening/closing tags (e.g., `<think>` with `</thinking>`)
+
 **Anthropic format** — `thinking` blocks:
 ```
 event: content_block_start
@@ -689,7 +700,8 @@ anthropic-proxy/
 │   ├── store/
 │   │   └── store.go         # In-memory response store (TTL-based)
 │   ├── translator/
-│   │   ├── request.go       # Anthropic → Chat Completions request
+│   │   ├── normalize.go       # Thinking tag normalization (streaming + non-streaming)
+│   │   ├── request.go         # Anthropic → Chat Completions request
 │   │   ├── response.go      # Chat Completions → Anthropic response
 │   │   ├── stream.go        # Chat Completions SSE → Anthropic SSE
 │   │   ├── responses.go     # Responses ↔ Chat Completions translator
