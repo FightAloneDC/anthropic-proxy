@@ -11,15 +11,21 @@ type GeminiStreamTranslator struct {
 	emit          func(data interface{})
 	toolCallNames map[int]string
 	toolCallArgs  map[int]string
+	normalizer    *StreamNormalizer
 }
 
 // NewGeminiStreamTranslator creates a Gemini stream translator.
 func NewGeminiStreamTranslator(emit func(data interface{})) *GeminiStreamTranslator {
-	return &GeminiStreamTranslator{
+	st := &GeminiStreamTranslator{
 		emit:          emit,
 		toolCallNames: map[int]string{},
 		toolCallArgs:  map[int]string{},
 	}
+	st.normalizer = NewStreamNormalizer(
+		func(content string) { st.handleNormalizedContent(content) },
+		func(reasoning string) { st.handleNormalizedReasoning(reasoning) },
+	)
+	return st
 }
 
 // ProcessChunk processes one OpenAI stream chunk and emits Gemini response objects.
@@ -33,25 +39,8 @@ func (st *GeminiStreamTranslator) ProcessChunk(chunk *types.OpenAIChunk) {
 
 	ch := chunk.Choices[0]
 
-	if ch.Delta.Reasoning != "" {
-		st.emit(types.GeminiResponse{Candidates: []types.GeminiCandidate{{
-			Index: ch.Index,
-			Content: &types.GeminiContent{
-				Role:  "model",
-				Parts: []types.GeminiPart{{Text: ch.Delta.Reasoning, Thought: true}},
-			},
-		}}})
-	}
-
-	if ch.Delta.Content != "" {
-		st.emit(types.GeminiResponse{Candidates: []types.GeminiCandidate{{
-			Index: ch.Index,
-			Content: &types.GeminiContent{
-				Role:  "model",
-				Parts: []types.GeminiPart{{Text: ch.Delta.Content}},
-			},
-		}}})
-	}
+	// Use normalizer to handle thinking tags in content
+	st.normalizer.ProcessChunk(ch.Delta.Content, ch.Delta.Reasoning)
 
 	if len(ch.Delta.ToolCalls) > 0 {
 		for _, tc := range ch.Delta.ToolCalls {
@@ -65,6 +54,9 @@ func (st *GeminiStreamTranslator) ProcessChunk(chunk *types.OpenAIChunk) {
 	}
 
 	if ch.FinishReason != nil {
+		// Flush any buffered content before finish
+		st.normalizer.Flush()
+
 		for index, name := range st.toolCallNames {
 			var args interface{}
 			if err := json.Unmarshal([]byte(st.toolCallArgs[index]), &args); err != nil || args == nil {
@@ -89,6 +81,39 @@ func (st *GeminiStreamTranslator) ProcessChunk(chunk *types.OpenAIChunk) {
 			FinishReason: MapGeminiFinishReason(*ch.FinishReason),
 		}}})
 	}
+}
+
+// handleNormalizedContent handles content emitted by the normalizer
+func (st *GeminiStreamTranslator) handleNormalizedContent(content string) {
+	if content == "" {
+		return
+	}
+
+	st.emit(types.GeminiResponse{Candidates: []types.GeminiCandidate{{
+		Content: &types.GeminiContent{
+			Role:  "model",
+			Parts: []types.GeminiPart{{Text: content}},
+		},
+	}}})
+}
+
+// handleNormalizedReasoning handles reasoning emitted by the normalizer
+func (st *GeminiStreamTranslator) handleNormalizedReasoning(reasoning string) {
+	if reasoning == "" {
+		return
+	}
+
+	st.emit(types.GeminiResponse{Candidates: []types.GeminiCandidate{{
+		Content: &types.GeminiContent{
+			Role:  "model",
+			Parts: []types.GeminiPart{{Text: reasoning, Thought: true}},
+		},
+	}}})
+}
+
+// Flush emits any remaining buffered content.
+func (st *GeminiStreamTranslator) Flush() {
+	st.normalizer.Flush()
 }
 
 func geminiUsage(usage *types.OpenAIUsage) *types.GeminiUsageMetadata {

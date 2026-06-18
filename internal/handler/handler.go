@@ -624,22 +624,123 @@ func (h *Handler) ChatCompletionsHandler(w http.ResponseWriter, r *http.Request)
 	w.WriteHeader(resp.StatusCode)
 
 	if reqCheck.Stream {
-		// Stream SSE passthrough
+		// Stream SSE with normalization
 		flusher, ok := w.(http.Flusher)
 		if !ok {
 			return
 		}
 		scanner := bufio.NewScanner(resp.Body)
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+
+		var currentChunkID string
+		var currentModel string
+
+		normalizer := translator.NewStreamNormalizer(
+			func(content string) {
+				// Emit normalized content chunk with preserved ID
+				chunk := types.OpenAIChunk{
+					ID:    currentChunkID,
+					Model: currentModel,
+					Choices: []types.ChunkChoice{{
+						Delta: types.Delta{Content: content},
+					}},
+				}
+				j, _ := json.Marshal(chunk)
+				fmt.Fprintf(w, "data: %s\n\n", string(j))
+				flusher.Flush()
+			},
+			func(reasoning string) {
+				// Emit normalized reasoning chunk with preserved ID
+				chunk := types.OpenAIChunk{
+					ID:    currentChunkID,
+					Model: currentModel,
+					Choices: []types.ChunkChoice{{
+						Delta: types.Delta{Reasoning: reasoning},
+					}},
+				}
+				j, _ := json.Marshal(chunk)
+				fmt.Fprintf(w, "data: %s\n\n", string(j))
+				flusher.Flush()
+			},
+		)
+
 		for scanner.Scan() {
 			line := scanner.Text()
-			fmt.Fprintf(w, "%s\n", line)
-			if line == "" {
+			if !strings.HasPrefix(line, "data: ") {
+				fmt.Fprintf(w, "%s\n", line)
+				if line == "" {
+					flusher.Flush()
+				}
+				continue
+			}
+			data := strings.TrimPrefix(line, "data: ")
+			if data == "[DONE]" {
+				// Flush any remaining buffered content before DONE
+				normalizer.Flush()
+				fmt.Fprintf(w, "data: [DONE]\n\n")
+				flusher.Flush()
+				break
+			}
+
+			var chunk types.OpenAIChunk
+			if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+				// Forward unparseable chunks as-is
+				fmt.Fprintf(w, "%s\n", line)
+				flusher.Flush()
+				continue
+			}
+
+			// Track current chunk ID and model for normalized chunks
+			if chunk.ID != "" {
+				currentChunkID = chunk.ID
+			}
+			if chunk.Model != "" {
+				currentModel = chunk.Model
+			}
+
+			if len(chunk.Choices) > 0 {
+				ch := chunk.Choices[0]
+				normalizer.ProcessChunk(ch.Delta.Content, ch.Delta.Reasoning)
+			} else {
+				// Forward chunks without choices (usage, etc.)
+				j, _ := json.Marshal(chunk)
+				fmt.Fprintf(w, "data: %s\n\n", string(j))
 				flusher.Flush()
 			}
 		}
+		// Flush any remaining buffered content if stream ended without [DONE]
+		normalizer.Flush()
 	} else {
-		io.Copy(w, resp.Body)
+		// Non-streaming with normalization
+		respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodySize))
+		if err != nil {
+			return
+		}
+
+		var openaiResp types.OpenAIResponse
+		if err := json.Unmarshal(respBody, &openaiResp); err != nil {
+			// Forward as-is if can't parse
+			w.Write(respBody)
+			return
+		}
+
+		// Only normalize if response has valid choices
+		if len(openaiResp.Choices) > 0 {
+			ch := &openaiResp.Choices[0]
+			var textContent string
+			if text, ok := ch.Message.Content.(string); ok {
+				textContent = text
+			}
+			cleanContent, cleanReasoning := translator.NormalizeContent(textContent, ch.Message.ReasoningContent)
+			ch.Message.Content = cleanContent
+			ch.Message.ReasoningContent = cleanReasoning
+
+			j, _ := json.Marshal(openaiResp)
+			w.Write(j)
+		} else {
+			// No choices - forward as-is
+			w.Write(respBody)
+		}
 	}
 }
 
@@ -879,6 +980,9 @@ func (h *Handler) geminiStreamResponse(w http.ResponseWriter, resp *http.Respons
 		}
 		streamTranslator.ProcessChunk(&chunk)
 	}
+
+	// Flush any remaining buffered content
+	streamTranslator.Flush()
 
 	if err := scanner.Err(); err != nil {
 		log.Printf("stream read error: %v", err)

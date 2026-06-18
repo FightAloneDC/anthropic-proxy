@@ -20,11 +20,23 @@ func TranslateGeminiResponse(resp *types.OpenAIResponse) *types.GeminiResponse {
 			},
 		}
 
-		if text, ok := ch.Message.Content.(string); ok && text != "" {
-			candidate.Content.Parts = append(candidate.Content.Parts, types.GeminiPart{Text: text})
+		// Get content and reasoning
+		var textContent string
+		if text, ok := ch.Message.Content.(string); ok {
+			textContent = text
 		}
-		if ch.Message.ReasoningContent != "" {
-			candidate.Content.Parts = append(candidate.Content.Parts, types.GeminiPart{Text: ch.Message.ReasoningContent, Thought: true})
+		reasoningContent := ch.Message.ReasoningContent
+
+		// Normalize thinking tags from content
+		cleanContent, cleanReasoning := NormalizeContent(textContent, reasoningContent)
+		textContent = cleanContent
+		reasoningContent = cleanReasoning
+
+		if textContent != "" {
+			candidate.Content.Parts = append(candidate.Content.Parts, types.GeminiPart{Text: textContent})
+		}
+		if reasoningContent != "" {
+			candidate.Content.Parts = append(candidate.Content.Parts, types.GeminiPart{Text: reasoningContent, Thought: true})
 		}
 
 		for _, tc := range ch.Message.ToolCalls {

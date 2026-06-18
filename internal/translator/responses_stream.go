@@ -23,6 +23,7 @@ type ResponsesStreamTranslator struct {
 	toolCalls      []toolCallState
 	inReasoning    bool
 	emit           func(event string, data interface{})
+	normalizer     *StreamNormalizer
 }
 
 type toolCallState struct {
@@ -33,10 +34,15 @@ type toolCallState struct {
 
 // NewResponsesStreamTranslator creates a new Responses API stream translator.
 func NewResponsesStreamTranslator(emit func(event string, data interface{}), responseID string) *ResponsesStreamTranslator {
-	return &ResponsesStreamTranslator{
+	st := &ResponsesStreamTranslator{
 		emit:       emit,
 		responseID: responseID,
 	}
+	st.normalizer = NewStreamNormalizer(
+		func(content string) { st.handleNormalizedContent(content) },
+		func(reasoning string) { st.handleNormalizedReasoning(reasoning) },
+	)
+	return st
 }
 
 // ProcessChunk processes a single OpenAI chunk and emits Responses API events.
@@ -79,22 +85,42 @@ func (st *ResponsesStreamTranslator) ProcessChunk(chunk *types.OpenAIChunk) {
 		return
 	}
 
-	// Reasoning content
-	if ch.Delta.Reasoning != "" {
-		st.handleReasoning(ch.Delta.Reasoning)
-		return
-	}
-
-	// Text content
-	if ch.Delta.Content != "" {
-		st.handleText(ch.Delta.Content)
-		return
-	}
+	// Use normalizer to handle thinking tags in content
+	st.normalizer.ProcessChunk(ch.Delta.Content, ch.Delta.Reasoning)
 
 	// Finish
 	if ch.FinishReason != nil && !st.finished {
 		st.finish(chunk.Usage)
 	}
+}
+
+// handleNormalizedContent handles content emitted by the normalizer
+func (st *ResponsesStreamTranslator) handleNormalizedContent(content string) {
+	if content == "" {
+		return
+	}
+
+	// Close reasoning if we were in it
+	if st.inReasoning {
+		st.inReasoning = false
+		st.emit("response.reasoning_text.done", types.ResponseReasoningTextDoneEvent{
+			Type:         "response.reasoning_text.done",
+			OutputIndex:  st.outputIndex,
+			ContentIndex: st.contentIndex,
+		})
+		st.contentIndex++
+	}
+
+	st.handleText(content)
+}
+
+// handleNormalizedReasoning handles reasoning emitted by the normalizer
+func (st *ResponsesStreamTranslator) handleNormalizedReasoning(reasoning string) {
+	if reasoning == "" {
+		return
+	}
+
+	st.handleReasoning(reasoning)
 }
 
 func (st *ResponsesStreamTranslator) handleToolCalls(toolCalls []types.ToolCallDelta) {

@@ -382,8 +382,14 @@ func TranslateResponsesResponse(resp *types.OpenAIResponse, requestID string) *t
 				text = t
 			}
 		}
-		if text == "" && ch.Message.ReasoningContent != "" {
-			text = ch.Message.ReasoningContent
+
+		// Normalize thinking tags from content
+		cleanContent, cleanReasoning := NormalizeContent(text, ch.Message.ReasoningContent)
+		text = cleanContent
+		reasoningContent := cleanReasoning
+
+		if text == "" && reasoningContent != "" {
+			text = reasoningContent
 		}
 		if text != "" {
 			ar.Output = append(ar.Output, types.ResponseOutputItem{

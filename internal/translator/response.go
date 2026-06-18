@@ -22,16 +22,28 @@ func TranslateResponse(resp *types.OpenAIResponse) *types.AnthropicResponse {
 		// Finish reason → stop reason
 		ar.StopReason = MapFinishReason(ch.FinishReason)
 
+		// Normalize thinking tags from content
+		reasoningContent := ch.Message.ReasoningContent
+		var textContent string
+		if ch.Message.Content != nil {
+			if text, ok := ch.Message.Content.(string); ok {
+				textContent = text
+			}
+		}
+
+		// Apply normalization: extract thinking tags if needed
+		cleanContent, cleanReasoning := NormalizeContent(textContent, reasoningContent)
+		reasoningContent = cleanReasoning
+		textContent = cleanContent
+
 		// Reasoning content → thinking blocks (before text content)
-		if ch.Message.ReasoningContent != "" {
-			ar.Content = append(ar.Content, types.ContentBlock{Type: "thinking", Thinking: ch.Message.ReasoningContent})
+		if reasoningContent != "" {
+			ar.Content = append(ar.Content, types.ContentBlock{Type: "thinking", Thinking: reasoningContent})
 		}
 
 		// Text content
-		if ch.Message.Content != nil {
-			if text, ok := ch.Message.Content.(string); ok && text != "" {
-				ar.Content = append(ar.Content, types.ContentBlock{Type: "text", Text: text})
-			}
+		if textContent != "" {
+			ar.Content = append(ar.Content, types.ContentBlock{Type: "text", Text: textContent})
 		}
 
 		// Tool calls
