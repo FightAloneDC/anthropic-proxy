@@ -1,0 +1,114 @@
+name: QA Tests
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: qa-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  qa:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install ImageMagick
+        run: sudo apt-get install -y -qq imagemagick
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install tuistory
+        run: npm install -g tuistory
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Build binary
+        run: make
+
+      - name: Install droid CLI
+        run: curl -fsSL https://app.factory.ai/cli | sh
+
+      - name: Run QA
+        id: qa
+        continue-on-error: true
+        timeout-minutes: 20
+        env:
+          CI: true
+          PROXY_API_KEY: ${{ secrets.PROXY_API_KEY }}
+        run: |
+          mkdir -p qa-results
+          droid exec --auto high \
+            "You are running in a non-interactive CI environment. There is NO human available. \
+             Do NOT use AskUser, do NOT wait for confirmations, do NOT pause for input. \
+             Activate the 'qa' skill using the Skill tool, then follow its instructions. \
+             Write the final report to qa-results/report.md"
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-results
+          path: qa-results/
+          retention-days: 14
+
+      - name: Post QA report as PR comment
+        if: always() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          REPORT_FILE="qa-results/report.md"
+
+          if [ ! -f "$REPORT_FILE" ]; then
+            echo "No report file found"
+            exit 0
+          fi
+
+          # Ensure report starts with QA Report heading
+          if ! head -1 "$REPORT_FILE" | grep -q "## QA Report"; then
+            REPORT="## QA Report
+
+          $(cat "$REPORT_FILE")"
+          else
+            REPORT=$(cat "$REPORT_FILE")
+          fi
+
+          # Add footer
+          FOOTER="
+
+          ---
+
+          :package: [Download full artifacts](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) | :gear: [Workflow run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+          REPORT="${REPORT}${FOOTER}"
+
+          # Find existing QA comment
+          COMMENT_ID=$(gh api repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments --jq '.[] | select(.body | startswith("<!-- qa-report -->")) | .id' | head -1)
+
+          if [ -n "$COMMENT_ID" ]; then
+            # Update existing comment
+            gh api repos/${{ github.repository }}/issues/comments/$COMMENT_ID \
+              --method PATCH \
+              --field body="<!-- qa-report -->
+          ${REPORT}"
+          else
+            # Create new comment
+            gh pr comment ${{ github.event.pull_request.number }} --body "<!-- qa-report -->
+          ${REPORT}"
+          fi
