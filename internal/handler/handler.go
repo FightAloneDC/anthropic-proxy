@@ -365,6 +365,7 @@ func (h *Handler) streamResponse(w http.ResponseWriter, resp *http.Response, ant
 	if err := scanner.Err(); err != nil {
 		log.Printf("stream read error: %v", err)
 	}
+	translator.Flush()
 }
 
 // ============================================================
@@ -533,6 +534,7 @@ func (h *Handler) responsesStreamResponse(w http.ResponseWriter, resp *http.Resp
 	if err := scanner.Err(); err != nil {
 		log.Printf("stream read error: %v", err)
 	}
+	streamTranslator.Flush()
 
 	// Store for previous_response_id support
 	if finalResp := streamTranslator.FinalResponse(); finalResp != nil {

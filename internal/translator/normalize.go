@@ -255,14 +255,16 @@ func (sn *StreamNormalizer) processContentChunk(chunk string) {
 					sn.openTagBuffer = remaining
 					return
 				}
-				// No tags found - buffer content
-				sn.contentBuffer += remaining
+				// No tags found - emit content immediately
+				sn.flushContentBuffer()
+				sn.emitContent(remaining)
 				return
 			}
 
-			// Buffer content before tag
+			// Emit content before tag
 			if startIdx > 0 {
-				sn.contentBuffer += remaining[:startIdx]
+				sn.flushContentBuffer()
+				sn.emitContent(remaining[:startIdx])
 			}
 
 			// Get content after opening tag
@@ -316,5 +318,13 @@ func hasIncompleteOpenTag(s string) bool {
 
 // Flush should be called at the end of stream to emit any remaining buffered content.
 func (sn *StreamNormalizer) Flush() {
+	if sn.inThinkTag && sn.tagBuffer != "" {
+		if !sn.hasReasoning {
+			sn.flushContentBuffer()
+			sn.emitReasoning(sn.tagBuffer)
+		}
+		sn.tagBuffer = ""
+		sn.inThinkTag = false
+	}
 	sn.flushContentBuffer()
 }

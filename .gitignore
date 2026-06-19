@@ -55,6 +55,9 @@ desktop.ini
 #-------------------------
 .claude/
 .qwen/
+.factory/
+skills/
+qa-results/
 
 #-------------------------
 # Development Folders

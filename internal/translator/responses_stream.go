@@ -22,6 +22,7 @@ type ResponsesStreamTranslator struct {
 	reasoningAccum string
 	toolCalls      []toolCallState
 	inReasoning    bool
+	lastUsage      *types.OpenAIUsage
 	emit           func(event string, data interface{})
 	normalizer     *StreamNormalizer
 }
@@ -30,6 +31,14 @@ type toolCallState struct {
 	id        string
 	name      string
 	arguments string
+}
+
+// Flush emits any remaining buffered content and finalizes if needed.
+func (st *ResponsesStreamTranslator) Flush() {
+	st.normalizer.Flush()
+	if !st.finished {
+		st.finish(st.lastUsage)
+	}
 }
 
 // NewResponsesStreamTranslator creates a new Responses API stream translator.
@@ -52,10 +61,10 @@ func (st *ResponsesStreamTranslator) ProcessChunk(chunk *types.OpenAIChunk) {
 		return
 	}
 
-	// Usage-only chunk (empty choices) — finalize
+	// Usage-only chunk (empty choices) — store usage, defer finalization to Flush()
 	if len(chunk.Choices) == 0 {
-		if chunk.Usage != nil && !st.finished {
-			st.finish(chunk.Usage)
+		if chunk.Usage != nil {
+			st.lastUsage = chunk.Usage
 		}
 		return
 	}

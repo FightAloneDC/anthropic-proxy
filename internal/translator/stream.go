@@ -14,8 +14,24 @@ type StreamTranslator struct {
 	finished     bool
 	inThinking   bool
 	skipThinking bool
+	lastUsage    *types.OpenAIUsage
 	emit         func(event string, data interface{})
 	normalizer   *StreamNormalizer
+}
+
+// Flush emits any remaining buffered content and closes open blocks.
+// Call this when the stream ends (scanner loop exits).
+func (st *StreamTranslator) Flush() {
+	st.normalizer.Flush()
+
+	if !st.finished {
+		if st.blockOpen {
+			st.closeBlock()
+		}
+		st.emitMessageDelta("end_turn", st.lastUsage)
+		st.emit("message_stop", types.EventMessageStop{Type: "message_stop"})
+		st.finished = true
+	}
 }
 
 // NewStreamTranslator creates a new stream translator
@@ -35,15 +51,10 @@ func (st *StreamTranslator) ProcessChunk(chunk *types.OpenAIChunk) {
 		return
 	}
 
-	// Usage-only chunk (empty choices) — finalize if we haven't already
+	// Usage-only chunk (empty choices) — store usage, defer finalization to Flush()
 	if len(chunk.Choices) == 0 {
-		if chunk.Usage != nil && !st.finished {
-			if st.blockOpen {
-				st.closeBlock()
-			}
-			st.emitMessageDelta("end_turn", chunk.Usage)
-			st.emit("message_stop", types.EventMessageStop{Type: "message_stop"})
-			st.finished = true
+		if chunk.Usage != nil {
+			st.lastUsage = chunk.Usage
 		}
 		return
 	}
