@@ -702,7 +702,27 @@ func (h *Handler) ChatCompletionsHandler(w http.ResponseWriter, r *http.Request)
 
 			if len(chunk.Choices) > 0 {
 				ch := chunk.Choices[0]
+
+				// Normalize content/reasoning (extracts thinking tags)
 				normalizer.ProcessChunk(ch.Delta.Content, ch.Delta.Reasoning)
+
+				// Forward tool_calls separately (without raw content)
+				if len(ch.Delta.ToolCalls) > 0 {
+					normalizer.Flush()
+					tcChunk := types.OpenAIChunk{
+						ID:      chunk.ID,
+						Object:  chunk.Object,
+						Created: chunk.Created,
+						Model:   chunk.Model,
+						Choices: []types.ChunkChoice{{
+							Index: ch.Index,
+							Delta: types.Delta{ToolCalls: ch.Delta.ToolCalls},
+						}},
+					}
+					j, _ := json.Marshal(tcChunk)
+					fmt.Fprintf(w, "data: %s\n\n", string(j))
+					flusher.Flush()
+				}
 			} else {
 				// Forward chunks without choices (usage, etc.)
 				j, _ := json.Marshal(chunk)

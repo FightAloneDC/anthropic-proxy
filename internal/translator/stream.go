@@ -77,6 +77,10 @@ func (st *StreamTranslator) ProcessChunk(chunk *types.OpenAIChunk) {
 		})
 	}
 
+	// Process content through normalizer FIRST (extracts thinking tags).
+	// Must happen before tool_calls because backend may send both in the same chunk.
+	st.normalizer.ProcessChunk(ch.Delta.Content, ch.Delta.Reasoning)
+
 	// Tool calls in this chunk
 	if len(ch.Delta.ToolCalls) > 0 {
 		for _, tc := range ch.Delta.ToolCalls {
@@ -104,11 +108,7 @@ func (st *StreamTranslator) ProcessChunk(chunk *types.OpenAIChunk) {
 				})
 			}
 		}
-		return
 	}
-
-	// Use normalizer to handle thinking tags in content
-	st.normalizer.ProcessChunk(ch.Delta.Content, ch.Delta.Reasoning)
 
 	// Finish
 	if ch.FinishReason != nil && !st.finished {
