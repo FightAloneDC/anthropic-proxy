@@ -1,6 +1,7 @@
 package translator
 
 import (
+	"encoding/json"
 	"fmt"
 	"sync/atomic"
 
@@ -9,8 +10,9 @@ import (
 
 // TranslateResponsesRequest converts an OpenAI Responses API request to Chat Completions format.
 // If prevMessages is non-nil, they are prepended before the input messages.
-// Returns the Chat Completions request and whether reasoning is enabled.
-func TranslateResponsesRequest(req *types.ResponsesRequest, prevMessages []types.OpenAIMsg) (*types.OpenAIRequest, bool) {
+// Returns the Chat Completions request, whether reasoning is enabled, and the set of
+// custom tool names (Codex "exec" etc.) that must be emitted as custom_tool_call.
+func TranslateResponsesRequest(req *types.ResponsesRequest, prevMessages []types.OpenAIMsg) (*types.OpenAIRequest, bool, map[string]bool) {
 	oai := &types.OpenAIRequest{
 		Model:       req.Model,
 		MaxTokens:   req.MaxOutputTokens,
@@ -18,6 +20,7 @@ func TranslateResponsesRequest(req *types.ResponsesRequest, prevMessages []types
 		TopP:        req.TopP,
 		Stream:      req.Stream,
 	}
+	customTools := map[string]bool{}
 
 	if req.Stream && req.StreamOptions != nil {
 		oai.StreamOptions = req.StreamOptions
@@ -43,24 +46,27 @@ func TranslateResponsesRequest(req *types.ResponsesRequest, prevMessages []types
 	// Previous messages (from previous_response_id)
 	oai.Messages = append(oai.Messages, prevMessages...)
 
-	// Input → messages
-	oai.Messages = append(oai.Messages, translateResponsesInput(req.Input)...)
-
-	// Tools (flat → nested function wrapper)
-	// Skip non-function tools (web_search, bash, etc.) as they have no Chat Completions equivalent
-	for _, t := range req.Tools {
-		if t.Type != "function" || t.Name == "" {
-			continue
-		}
-		oai.Tools = append(oai.Tools, types.OpenAITool{
-			Type: "function",
-			Function: types.ToolFunction{
-				Name:        t.Name,
-				Description: t.Description,
-				Parameters:  t.Parameters,
-			},
-		})
+	// Input → messages (+ tools embedded as additional_tools items, used by Codex)
+	msgs, inputTools, inputCustom := translateResponsesInputWithTools(req.Input)
+	oai.Messages = append(oai.Messages, msgs...)
+	for name := range inputCustom {
+		customTools[name] = true
 	}
+
+	// Tools from top-level request field (flat → nested function wrapper)
+	// Skip non-function/non-custom tools (web_search, bash, etc.)
+	for _, t := range req.Tools {
+		if tool, isCustom := responsesToolToOpenAI(t.Type, t.Name, t.Description, t.Parameters); tool != nil {
+			oai.Tools = append(oai.Tools, *tool)
+			if isCustom {
+				customTools[t.Name] = true
+			}
+		}
+	}
+	// Tools from input[].type == "additional_tools" (Codex)
+	oai.Tools = append(oai.Tools, inputTools...)
+	// Deduplicate by function name (top-level wins over later duplicates)
+	oai.Tools = dedupeOpenAITools(oai.Tools)
 
 	// Tool choice (mostly same format)
 	if req.ToolChoice != nil {
@@ -77,27 +83,34 @@ func TranslateResponsesRequest(req *types.ResponsesRequest, prevMessages []types
 		oai.User = req.User
 	}
 
-	return oai, reasoningEnabled
+	return oai, reasoningEnabled, customTools
 }
 
 // translateResponsesInput converts Responses API input to Chat Completions messages.
 func translateResponsesInput(input interface{}) []types.OpenAIMsg {
+	msgs, _, _ := translateResponsesInputWithTools(input)
+	return msgs
+}
+
+// translateResponsesInputWithTools converts Responses input and also extracts
+// tools from Codex-style input items (type=additional_tools / namespace).
+// The third return value is the set of custom tool names found in those items.
+func translateResponsesInputWithTools(input interface{}) ([]types.OpenAIMsg, []types.OpenAITool, map[string]bool) {
 	switch v := input.(type) {
 	case string:
-		// Simple string input → single user message
-		return []types.OpenAIMsg{{Role: "user", Content: v}}
-
+		return []types.OpenAIMsg{{Role: "user", Content: v}}, nil, nil
 	case []interface{}:
 		return translateInputItems(v)
-
 	default:
-		return nil
+		return nil, nil, nil
 	}
 }
 
-// translateInputItems converts an array of input items to messages.
-func translateInputItems(items []interface{}) []types.OpenAIMsg {
+// translateInputItems converts an array of input items to messages and tools.
+func translateInputItems(items []interface{}) ([]types.OpenAIMsg, []types.OpenAITool, map[string]bool) {
 	var messages []types.OpenAIMsg
+	var tools []types.OpenAITool
+	customTools := map[string]bool{}
 
 	for _, item := range items {
 		m, ok := item.(map[string]interface{})
@@ -112,12 +125,23 @@ func translateInputItems(items []interface{}) []types.OpenAIMsg {
 			msgs := translateInputMessage(m)
 			messages = append(messages, msgs...)
 
-		case "function_call":
-			// function_call → assistant message with tool_calls
+		case "function_call", "custom_tool_call":
+			// function_call / custom_tool_call → assistant message with tool_calls.
+			// Custom tools use "input" (raw string); function tools use "arguments" (JSON).
 			msg := types.OpenAIMsg{Role: "assistant"}
 			callID, _ := m["call_id"].(string)
 			name, _ := m["name"].(string)
 			args, _ := m["arguments"].(string)
+			if itemType == "custom_tool_call" {
+				customTools[name] = true
+				if input, ok := m["input"].(string); ok && input != "" {
+					// Wrap raw custom input as {"input":...} so Chat Completions
+					// backends that expect JSON function args still accept it.
+					// On the way back we extract via extractCustomToolInput.
+					b, _ := json.Marshal(map[string]string{"input": input})
+					args = string(b)
+				}
+			}
 			msg.ToolCalls = []types.ToolCall{
 				{
 					ID:   callID,
@@ -130,8 +154,8 @@ func translateInputItems(items []interface{}) []types.OpenAIMsg {
 			}
 			messages = append(messages, msg)
 
-		case "function_call_output":
-			// function_call_output → tool message
+		case "function_call_output", "custom_tool_call_output":
+			// function/custom tool output → tool message
 			callID, _ := m["call_id"].(string)
 			output, _ := m["output"].(string)
 			messages = append(messages, types.OpenAIMsg{
@@ -139,11 +163,196 @@ func translateInputItems(items []interface{}) []types.OpenAIMsg {
 				ToolCallID: callID,
 				Content:    output,
 			})
+
+		case "additional_tools":
+			// Codex embeds tools in input instead of top-level tools[]
+			extracted, names := extractAdditionalTools(m["tools"])
+			tools = append(tools, extracted...)
+			for name := range names {
+				customTools[name] = true
+			}
+
+		case "namespace":
+			// Nested namespace tools (collaboration.*, etc.)
+			extracted, names := extractNamespaceTools(m)
+			tools = append(tools, extracted...)
+			for name := range names {
+				customTools[name] = true
+			}
 		}
 	}
 
 	// Merge consecutive assistant messages with tool_calls
-	return mergeAssistantToolCalls(messages)
+	return mergeAssistantToolCalls(messages), tools, customTools
+}
+
+// extractAdditionalTools converts tools from an additional_tools input item.
+// Function tools are forwarded as-is. Custom tools (Codex "exec" etc.) are
+// approximated as Chat Completions functions with a free-form {"input": string}
+// schema; the response path rewrites them back to custom_tool_call + input.
+func extractAdditionalTools(raw interface{}) ([]types.OpenAITool, map[string]bool) {
+	arr, ok := raw.([]interface{})
+	if !ok {
+		return nil, nil
+	}
+	var out []types.OpenAITool
+	custom := map[string]bool{}
+	for _, item := range arr {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		typ, _ := m["type"].(string)
+		name, _ := m["name"].(string)
+		desc, _ := m["description"].(string)
+		switch typ {
+		case "function", "custom":
+			if tool, isCustom := responsesToolToOpenAI(typ, name, desc, m["parameters"]); tool != nil {
+				out = append(out, *tool)
+				if isCustom {
+					custom[name] = true
+				}
+			}
+		case "namespace":
+			extracted, names := extractNamespaceTools(m)
+			out = append(out, extracted...)
+			for n := range names {
+				custom[n] = true
+			}
+		}
+	}
+	return out, custom
+}
+
+// extractNamespaceTools flattens namespace.tools into function tools named "ns__child".
+func extractNamespaceTools(m map[string]interface{}) ([]types.OpenAITool, map[string]bool) {
+	ns, _ := m["name"].(string)
+	raw, ok := m["tools"].([]interface{})
+	if !ok {
+		return nil, nil
+	}
+	var out []types.OpenAITool
+	custom := map[string]bool{}
+	for _, item := range raw {
+		t, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		typ, _ := t["type"].(string)
+		name, _ := t["name"].(string)
+		desc, _ := t["description"].(string)
+		if (typ != "function" && typ != "custom") || name == "" {
+			continue
+		}
+		fullName := name
+		if ns != "" {
+			fullName = ns + "__" + name
+		}
+		if tool, isCustom := responsesToolToOpenAI(typ, fullName, desc, t["parameters"]); tool != nil {
+			out = append(out, *tool)
+			if isCustom {
+				custom[fullName] = true
+			}
+		}
+	}
+	return out, custom
+}
+
+// responsesToolToOpenAI maps a Responses-style tool to Chat Completions tools[].
+// Custom tools are forwarded as free-form functions; isCustom=true so the
+// response path can emit custom_tool_call with an "input" field.
+func responsesToolToOpenAI(typ, name, desc string, params interface{}) (*types.OpenAITool, bool) {
+	if name == "" {
+		return nil, false
+	}
+	switch typ {
+	case "function":
+		return &types.OpenAITool{
+			Type: "function",
+			Function: types.ToolFunction{
+				Name:        name,
+				Description: desc,
+				Parameters:  params,
+			},
+		}, false
+	case "custom":
+		// Free-form string input: backends that only support JSON function
+		// args still get a usable schema. extractCustomToolInput unwraps this
+		// on the way back to Responses/Codex.
+		if params == nil {
+			params = map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"input": map[string]interface{}{
+						"type":        "string",
+						"description": "Raw custom tool input",
+					},
+				},
+				"required":             []string{"input"},
+				"additionalProperties": false,
+			}
+		}
+		return &types.OpenAITool{
+			Type: "function",
+			Function: types.ToolFunction{
+				Name:        name,
+				Description: desc,
+				Parameters:  params,
+			},
+		}, true
+	default:
+		return nil, false
+	}
+}
+
+// extractCustomToolInput converts Chat Completions function arguments into the
+// raw string expected by Responses custom_tool_call.input.
+// Accepts: plain string, {"input":"..."}, or any other JSON (returned as-is).
+func extractCustomToolInput(args string) string {
+	if args == "" {
+		return ""
+	}
+	var obj map[string]interface{}
+	if err := json.Unmarshal([]byte(args), &obj); err != nil {
+		// Not JSON — treat the whole string as the input (some backends
+		// emit free-form text for custom tools).
+		return args
+	}
+	if v, ok := obj["input"]; ok {
+		switch t := v.(type) {
+		case string:
+			return t
+		default:
+			b, err := json.Marshal(t)
+			if err != nil {
+				return args
+			}
+			return string(b)
+		}
+	}
+	// Model returned some other JSON shape — keep it as the input string.
+	return args
+}
+
+// dedupeOpenAITools keeps the first tool for each function name.
+func dedupeOpenAITools(tools []types.OpenAITool) []types.OpenAITool {
+	if len(tools) == 0 {
+		return tools
+	}
+	seen := make(map[string]struct{}, len(tools))
+	out := make([]types.OpenAITool, 0, len(tools))
+	for _, t := range tools {
+		name := t.Function.Name
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, t)
+	}
+	return out
 }
 
 // translateInputMessage converts a message input item to OpenAI messages.
@@ -342,7 +551,9 @@ func translateResponseFormat(format *types.TextFormat) interface{} {
 }
 
 // TranslateResponsesResponse converts a Chat Completions response to Responses API format.
-func TranslateResponsesResponse(resp *types.OpenAIResponse, requestID string) *types.ResponsesResponse {
+// customTools lists tool names that must be emitted as custom_tool_call (with "input")
+// rather than function_call (with "arguments").
+func TranslateResponsesResponse(resp *types.OpenAIResponse, requestID string, customTools map[string]bool) *types.ResponsesResponse {
 	ar := &types.ResponsesResponse{
 		ID:        requestID,
 		Object:    "response",
@@ -361,14 +572,26 @@ func TranslateResponsesResponse(resp *types.OpenAIResponse, requestID string) *t
 			ar.IncompleteDetails = map[string]string{"reason": "max_output_tokens"}
 		}
 
-		// Tool calls → function_call output items
+		// Tool calls → function_call or custom_tool_call output items
 		if len(ch.Message.ToolCalls) > 0 {
 			for _, tc := range ch.Message.ToolCalls {
+				name := tc.Function.Name
+				if customTools[name] {
+					ar.Output = append(ar.Output, types.ResponseOutputItem{
+						Type:   "custom_tool_call",
+						CallID: tc.ID,
+						Name:   name,
+						Input:  extractCustomToolInput(tc.Function.Arguments),
+						Status: "completed",
+					})
+					continue
+				}
+				args := tc.Function.Arguments
 				ar.Output = append(ar.Output, types.ResponseOutputItem{
 					Type:      "function_call",
 					CallID:    tc.ID,
-					Name:      tc.Function.Name,
-					Arguments: tc.Function.Arguments,
+					Name:      name,
+					Arguments: &args,
 					Status:    "completed",
 				})
 			}
@@ -439,7 +662,16 @@ func StoredResponseToMessages(resp *types.ResponsesResponse) []types.OpenAIMsg {
 				}
 			}
 
-		case "function_call":
+		case "function_call", "custom_tool_call":
+			args := ""
+			if item.Type == "custom_tool_call" {
+				if item.Input != "" {
+					b, _ := json.Marshal(map[string]string{"input": item.Input})
+					args = string(b)
+				}
+			} else if item.Arguments != nil {
+				args = *item.Arguments
+			}
 			messages = append(messages, types.OpenAIMsg{
 				Role: "assistant",
 				ToolCalls: []types.ToolCall{
@@ -448,7 +680,7 @@ func StoredResponseToMessages(resp *types.ResponsesResponse) []types.OpenAIMsg {
 						Type: "function",
 						Function: types.FunctionCall{
 							Name:      item.Name,
-							Arguments: item.Arguments,
+							Arguments: args,
 						},
 					},
 				},

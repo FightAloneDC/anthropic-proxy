@@ -49,11 +49,13 @@ type InputItem struct {
 	Type    string      `json:"type"` // "message", "function_call", "function_call_output"
 	Role    string      `json:"role,omitempty"`
 	Content interface{} `json:"content,omitempty"`
-	// For function_call
+	// For function_call / custom_tool_call
 	CallID    string `json:"call_id,omitempty"`
 	Name      string `json:"name,omitempty"`
 	Arguments string `json:"arguments,omitempty"`
-	// For function_call_output
+	// For custom_tool_call (Codex "exec" etc.)
+	Input string `json:"input,omitempty"`
+	// For function_call_output / custom_tool_call_output
 	Output string `json:"output,omitempty"`
 	// For message with status
 	Status string `json:"status,omitempty"`
@@ -93,22 +95,38 @@ type ResponsesResponse struct {
 }
 
 // ResponseOutputItem represents an item in the output array.
+//
+// Codex/OpenAI Responses clients require:
+//   - message items: content is a Vec (not omitted while streaming starts)
+//   - function_call items: arguments is always present (may be "")
+// Empty OutputContentBlock.Text must still serialize as "text":""
+// (ContentItem::OutputText requires the field).
+//
+// Arguments is a pointer so omitempty drops it on message items, while
+// function_call can send a non-nil pointer to "" (still serialized).
+//
+// Input is used by custom_tool_call (Codex "exec" etc.); omitempty keeps it
+// off message/function_call items.
 type ResponseOutputItem struct {
-	Type      string      `json:"type"` // "message" or "function_call"
-	ID        string      `json:"id,omitempty"`
-	Role      string      `json:"role,omitempty"`
-	Content   interface{} `json:"content,omitempty"`
-	Status    string      `json:"status,omitempty"`
-	// For function_call
-	CallID    string `json:"call_id,omitempty"`
-	Name      string `json:"name,omitempty"`
-	Arguments string `json:"arguments,omitempty"`
+	Type    string               `json:"type"` // "message", "function_call", or "custom_tool_call"
+	ID      string               `json:"id,omitempty"`
+	Role    string               `json:"role,omitempty"`
+	Content []OutputContentBlock `json:"content,omitempty"`
+	// Status is not part of Codex ResponseItem::Message, but harmless if present.
+	Status string `json:"status,omitempty"`
+	// For function_call / custom_tool_call
+	CallID    string  `json:"call_id,omitempty"`
+	Name      string  `json:"name,omitempty"`
+	Arguments *string `json:"arguments,omitempty"`
+	// For custom_tool_call — free-form string payload (not JSON arguments)
+	Input string `json:"input,omitempty"`
 }
 
 // OutputContentBlock represents a content block in output.
+// Text is never omitempty: serde ContentItem::OutputText requires "text".
 type OutputContentBlock struct {
 	Type string `json:"type"` // "output_text", "refusal"
-	Text string `json:"text,omitempty"`
+	Text string `json:"text"`
 }
 
 // ResponsesUsage represents token usage in Responses API format.
@@ -153,31 +171,33 @@ type ResponseCompletedEvent struct {
 
 // ResponseOutputItemAddedEvent is emitted when an output item starts.
 type ResponseOutputItemAddedEvent struct {
-	Type  string              `json:"type"` // "response.output_item.added"
-	Index int                 `json:"index"`
-	Item  *ResponseOutputItem `json:"item"`
+	Type        string              `json:"type"` // "response.output_item.added"
+	OutputIndex int                 `json:"output_index"`
+	Item        *ResponseOutputItem `json:"item"`
 }
 
 // ResponseOutputItemDoneEvent is emitted when an output item is complete.
 type ResponseOutputItemDoneEvent struct {
-	Type  string              `json:"type"` // "response.output_item.done"
-	Index int                 `json:"index"`
-	Item  *ResponseOutputItem `json:"item"`
+	Type        string              `json:"type"` // "response.output_item.done"
+	OutputIndex int                 `json:"output_index"`
+	Item        *ResponseOutputItem `json:"item"`
 }
 
 // ResponseContentPartAddedEvent is emitted when a content part starts.
 type ResponseContentPartAddedEvent struct {
-	Type         string             `json:"type"` // "response.content_part.added"
-	OutputIndex  int                `json:"output_index"`
-	ContentIndex int                `json:"content_index"`
+	Type         string              `json:"type"` // "response.content_part.added"
+	OutputIndex  int                 `json:"output_index"`
+	ContentIndex int                 `json:"content_index"`
+	ItemID       string              `json:"item_id,omitempty"`
 	Part         *OutputContentBlock `json:"part"`
 }
 
 // ResponseContentPartDoneEvent is emitted when a content part is done.
 type ResponseContentPartDoneEvent struct {
-	Type         string             `json:"type"` // "response.content_part.done"
-	OutputIndex  int                `json:"output_index"`
-	ContentIndex int                `json:"content_index"`
+	Type         string              `json:"type"` // "response.content_part.done"
+	OutputIndex  int                 `json:"output_index"`
+	ContentIndex int                 `json:"content_index"`
+	ItemID       string              `json:"item_id,omitempty"`
 	Part         *OutputContentBlock `json:"part"`
 }
 
@@ -186,6 +206,7 @@ type ResponseOutputTextDeltaEvent struct {
 	Type         string `json:"type"` // "response.output_text.delta"
 	OutputIndex  int    `json:"output_index"`
 	ContentIndex int    `json:"content_index"`
+	ItemID       string `json:"item_id,omitempty"`
 	Delta        string `json:"delta"`
 }
 
@@ -194,6 +215,7 @@ type ResponseOutputTextDoneEvent struct {
 	Type         string `json:"type"` // "response.output_text.done"
 	OutputIndex  int    `json:"output_index"`
 	ContentIndex int    `json:"content_index"`
+	ItemID       string `json:"item_id,omitempty"`
 	Text         string `json:"text"`
 }
 
@@ -201,6 +223,7 @@ type ResponseOutputTextDoneEvent struct {
 type ResponseFunctionCallArgumentsDeltaEvent struct {
 	Type        string `json:"type"` // "response.function_call_arguments.delta"
 	OutputIndex int    `json:"output_index"`
+	ItemID      string `json:"item_id,omitempty"`
 	Delta       string `json:"delta"`
 }
 
@@ -208,7 +231,24 @@ type ResponseFunctionCallArgumentsDeltaEvent struct {
 type ResponseFunctionCallArgumentsDoneEvent struct {
 	Type        string `json:"type"` // "response.function_call_arguments.done"
 	OutputIndex int    `json:"output_index"`
+	ItemID      string `json:"item_id,omitempty"`
 	Arguments   string `json:"arguments"`
+}
+
+// ResponseCustomToolCallInputDeltaEvent streams a partial custom tool input.
+type ResponseCustomToolCallInputDeltaEvent struct {
+	Type        string `json:"type"` // "response.custom_tool_call_input.delta"
+	OutputIndex int    `json:"output_index"`
+	ItemID      string `json:"item_id,omitempty"`
+	Delta       string `json:"delta"`
+}
+
+// ResponseCustomToolCallInputDoneEvent signals custom tool input is complete.
+type ResponseCustomToolCallInputDoneEvent struct {
+	Type        string `json:"type"` // "response.custom_tool_call_input.done"
+	OutputIndex int    `json:"output_index"`
+	ItemID      string `json:"item_id,omitempty"`
+	Input       string `json:"input"`
 }
 
 // ResponseReasoningTextDeltaEvent streams reasoning text.
@@ -216,6 +256,7 @@ type ResponseReasoningTextDeltaEvent struct {
 	Type         string `json:"type"` // "response.reasoning_text.delta"
 	OutputIndex  int    `json:"output_index"`
 	ContentIndex int    `json:"content_index"`
+	ItemID       string `json:"item_id,omitempty"`
 	Delta        string `json:"delta"`
 }
 
@@ -224,4 +265,5 @@ type ResponseReasoningTextDoneEvent struct {
 	Type         string `json:"type"` // "response.reasoning_text.done"
 	OutputIndex  int    `json:"output_index"`
 	ContentIndex int    `json:"content_index"`
+	ItemID       string `json:"item_id,omitempty"`
 }

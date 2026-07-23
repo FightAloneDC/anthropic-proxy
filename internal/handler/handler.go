@@ -417,7 +417,7 @@ func (h *Handler) ResponsesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	responseID := translator.GenerateResponseID()
-	openaiReq, _ := translator.TranslateResponsesRequest(&responsesReq, prevMessages)
+	openaiReq, _, customTools := translator.TranslateResponsesRequest(&responsesReq, prevMessages)
 
 	targets, err := h.modelTargets(openaiReq.Model, "/v1/chat/completions")
 	if err != nil {
@@ -427,7 +427,7 @@ func (h *Handler) ResponsesHandler(w http.ResponseWriter, r *http.Request) {
 
 	reqBody, _ := json.Marshal(openaiReq)
 	if h.cfg.Proxy.Debug {
-		log.Printf("→ POST %s model=%s stream=%v", targets[0].url, openaiReq.Model, openaiReq.Stream)
+		log.Printf("→ POST %s model=%s stream=%v customTools=%v", targets[0].url, openaiReq.Model, openaiReq.Stream, customTools)
 	}
 
 	var resp *http.Response
@@ -450,13 +450,13 @@ func (h *Handler) ResponsesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if responsesReq.Stream {
-		h.responsesStreamResponse(w, resp, responseID)
+		h.responsesStreamResponse(w, resp, responseID, customTools)
 	} else {
-		h.responsesNonStreamResponse(w, resp, responseID)
+		h.responsesNonStreamResponse(w, resp, responseID, customTools)
 	}
 }
 
-func (h *Handler) responsesNonStreamResponse(w http.ResponseWriter, resp *http.Response, responseID string) {
+func (h *Handler) responsesNonStreamResponse(w http.ResponseWriter, resp *http.Response, responseID string, customTools map[string]bool) {
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodySize))
 	if err != nil {
 		writeResponsesError(w, http.StatusBadGateway, "api_error", "failed to read backend response")
@@ -477,7 +477,7 @@ func (h *Handler) responsesNonStreamResponse(w http.ResponseWriter, resp *http.R
 		return
 	}
 
-	responsesResp := translator.TranslateResponsesResponse(&openaiResp, responseID)
+	responsesResp := translator.TranslateResponsesResponse(&openaiResp, responseID, customTools)
 
 	// Store for previous_response_id support
 	h.store.Store(responseID, responsesResp)
@@ -487,7 +487,7 @@ func (h *Handler) responsesNonStreamResponse(w http.ResponseWriter, resp *http.R
 	json.NewEncoder(w).Encode(responsesResp)
 }
 
-func (h *Handler) responsesStreamResponse(w http.ResponseWriter, resp *http.Response, responseID string) {
+func (h *Handler) responsesStreamResponse(w http.ResponseWriter, resp *http.Response, responseID string, customTools map[string]bool) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeResponsesError(w, http.StatusInternalServerError, "api_error", "streaming not supported")
@@ -508,7 +508,7 @@ func (h *Handler) responsesStreamResponse(w http.ResponseWriter, resp *http.Resp
 		flusher.Flush()
 	}
 
-	streamTranslator := translator.NewResponsesStreamTranslator(emit, responseID)
+	streamTranslator := translator.NewResponsesStreamTranslator(emit, responseID, customTools)
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)

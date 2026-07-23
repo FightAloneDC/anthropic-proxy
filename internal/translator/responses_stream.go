@@ -2,6 +2,7 @@ package translator
 
 import (
 	"fmt"
+	"time"
 
 	"anthropic-proxy/internal/types"
 )
@@ -14,6 +15,7 @@ type ResponsesStreamTranslator struct {
 	finalResp      *types.ResponsesResponse
 	responseID     string
 	model          string
+	createdAt      int64
 	outputIndex    int
 	contentIndex   int
 	hasText        bool
@@ -21,6 +23,7 @@ type ResponsesStreamTranslator struct {
 	textAccum      string
 	reasoningAccum string
 	toolCalls      []toolCallState
+	customTools    map[string]bool
 	inReasoning    bool
 	lastUsage      *types.OpenAIUsage
 	emit           func(event string, data interface{})
@@ -31,6 +34,10 @@ type toolCallState struct {
 	id        string
 	name      string
 	arguments string
+	// For custom tools: track how much of the unwrapped input we already streamed
+	// so we can emit input.delta as raw args arrive.
+	inputEmitted int
+	isCustom     bool
 }
 
 // Flush emits any remaining buffered content and finalizes if needed.
@@ -42,10 +49,12 @@ func (st *ResponsesStreamTranslator) Flush() {
 }
 
 // NewResponsesStreamTranslator creates a new Responses API stream translator.
-func NewResponsesStreamTranslator(emit func(event string, data interface{}), responseID string) *ResponsesStreamTranslator {
+// customTools lists tool names that must be emitted as custom_tool_call.
+func NewResponsesStreamTranslator(emit func(event string, data interface{}), responseID string, customTools map[string]bool) *ResponsesStreamTranslator {
 	st := &ResponsesStreamTranslator{
-		emit:       emit,
-		responseID: responseID,
+		emit:        emit,
+		responseID:  responseID,
+		customTools: customTools,
 	}
 	st.normalizer = NewStreamNormalizer(
 		func(content string) { st.handleNormalizedContent(content) },
@@ -75,12 +84,16 @@ func (st *ResponsesStreamTranslator) ProcessChunk(chunk *types.OpenAIChunk) {
 	if !st.started {
 		st.started = true
 		st.model = chunk.Model
+		st.createdAt = chunk.Created
+		if st.createdAt == 0 {
+			st.createdAt = time.Now().Unix()
+		}
 		st.emit("response.created", types.ResponseCreatedEvent{
 			Type: "response.created",
 			Response: &types.ResponsesResponse{
 				ID:        st.responseID,
 				Object:    "response",
-				CreatedAt: chunk.Created,
+				CreatedAt: st.createdAt,
 				Model:     chunk.Model,
 				Status:    "in_progress",
 				Output:    []types.ResponseOutputItem{},
@@ -132,6 +145,28 @@ func (st *ResponsesStreamTranslator) handleNormalizedReasoning(reasoning string)
 	st.handleReasoning(reasoning)
 }
 
+func (st *ResponsesStreamTranslator) messageItemID() string {
+	return fmt.Sprintf("msg_%s", st.responseID)
+}
+
+func (st *ResponsesStreamTranslator) functionCallItemID(callID string) string {
+	if callID == "" {
+		return fmt.Sprintf("fc_%s", st.responseID)
+	}
+	return fmt.Sprintf("fc_%s", callID)
+}
+
+func (st *ResponsesStreamTranslator) customToolCallItemID(callID string) string {
+	if callID == "" {
+		return fmt.Sprintf("ctc_%s", st.responseID)
+	}
+	return fmt.Sprintf("ctc_%s", callID)
+}
+
+func (st *ResponsesStreamTranslator) isCustomTool(name string) bool {
+	return st.customTools != nil && st.customTools[name]
+}
+
 func (st *ResponsesStreamTranslator) handleToolCalls(toolCalls []types.ToolCallDelta) {
 	// Close reasoning if we were in it
 	if st.inReasoning {
@@ -142,34 +177,77 @@ func (st *ResponsesStreamTranslator) handleToolCalls(toolCalls []types.ToolCallD
 		if tc.ID != "" {
 			// New tool call
 			st.hasToolCalls = true
+			isCustom := st.isCustomTool(tc.Function.Name)
 			st.toolCalls = append(st.toolCalls, toolCallState{
-				id:   tc.ID,
-				name: tc.Function.Name,
+				id:       tc.ID,
+				name:     tc.Function.Name,
+				isCustom: isCustom,
 			})
 
-			// Emit output_item.added for function_call
-			st.emit("response.output_item.added", types.ResponseOutputItemAddedEvent{
-				Type:  "response.output_item.added",
-				Index: len(st.toolCalls) - 1 + st.outputIndexOffset(),
-				Item: &types.ResponseOutputItem{
-					Type:   "function_call",
-					CallID: tc.ID,
-					Name:   tc.Function.Name,
-					Status: "in_progress",
-				},
-			})
+			idx := len(st.toolCalls) - 1
+			if isCustom {
+				itemID := st.customToolCallItemID(tc.ID)
+				// Codex ResponseItem::CustomToolCall requires name/call_id/input.
+				st.emit("response.output_item.added", types.ResponseOutputItemAddedEvent{
+					Type:        "response.output_item.added",
+					OutputIndex: idx + st.outputIndexOffset(),
+					Item: &types.ResponseOutputItem{
+						Type:   "custom_tool_call",
+						ID:     itemID,
+						CallID: tc.ID,
+						Name:   tc.Function.Name,
+						Input:  "",
+						Status: "in_progress",
+					},
+				})
+			} else {
+				itemID := st.functionCallItemID(tc.ID)
+				// Codex ResponseItem::FunctionCall requires name/call_id/arguments.
+				st.emit("response.output_item.added", types.ResponseOutputItemAddedEvent{
+					Type:        "response.output_item.added",
+					OutputIndex: idx + st.outputIndexOffset(),
+					Item: &types.ResponseOutputItem{
+						Type:      "function_call",
+						ID:        itemID,
+						CallID:    tc.ID,
+						Name:      tc.Function.Name,
+						Arguments: strPtr(""),
+						Status:    "in_progress",
+					},
+				})
+			}
 		}
 		if tc.Function.Arguments != "" {
-			// Stream arguments
+			// Stream arguments / custom input
 			if len(st.toolCalls) > 0 {
 				idx := len(st.toolCalls) - 1
 				st.toolCalls[idx].arguments += tc.Function.Arguments
 
-				st.emit("response.function_call_arguments.delta", types.ResponseFunctionCallArgumentsDeltaEvent{
-					Type:        "response.function_call_arguments.delta",
-					OutputIndex: idx + st.outputIndexOffset(),
-					Delta:       tc.Function.Arguments,
-				})
+				if st.toolCalls[idx].isCustom {
+					// Emit progressive raw input as it becomes extractable.
+					// While args are partial JSON we may not unwrap yet; finish()
+					// always emits input.done with the final value.
+					input := extractCustomToolInput(st.toolCalls[idx].arguments)
+					if len(input) > st.toolCalls[idx].inputEmitted {
+						delta := input[st.toolCalls[idx].inputEmitted:]
+						st.toolCalls[idx].inputEmitted = len(input)
+						itemID := st.customToolCallItemID(st.toolCalls[idx].id)
+						st.emit("response.custom_tool_call_input.delta", types.ResponseCustomToolCallInputDeltaEvent{
+							Type:        "response.custom_tool_call_input.delta",
+							OutputIndex: idx + st.outputIndexOffset(),
+							ItemID:      itemID,
+							Delta:       delta,
+						})
+					}
+				} else {
+					itemID := st.functionCallItemID(st.toolCalls[idx].id)
+					st.emit("response.function_call_arguments.delta", types.ResponseFunctionCallArgumentsDeltaEvent{
+						Type:        "response.function_call_arguments.delta",
+						OutputIndex: idx + st.outputIndexOffset(),
+						ItemID:      itemID,
+						Delta:       tc.Function.Arguments,
+					})
+				}
 			}
 		}
 	}
@@ -178,13 +256,19 @@ func (st *ResponsesStreamTranslator) handleToolCalls(toolCalls []types.ToolCallD
 func (st *ResponsesStreamTranslator) handleReasoning(reasoning string) {
 	if !st.inReasoning {
 		st.inReasoning = true
+		itemID := st.messageItemID()
+		// Codex ResponseItem::Message requires content: Vec (cannot omit).
 		st.emit("response.output_item.added", types.ResponseOutputItemAddedEvent{
-			Type:  "response.output_item.added",
-			Index: st.outputIndex,
+			Type:        "response.output_item.added",
+			OutputIndex: st.outputIndex,
 			Item: &types.ResponseOutputItem{
 				Type:   "message",
+				ID:     itemID,
 				Role:   "assistant",
 				Status: "in_progress",
+				Content: []types.OutputContentBlock{
+					{Type: "output_text", Text: ""},
+				},
 			},
 		})
 
@@ -192,7 +276,8 @@ func (st *ResponsesStreamTranslator) handleReasoning(reasoning string) {
 			Type:         "response.content_part.added",
 			OutputIndex:  st.outputIndex,
 			ContentIndex: st.contentIndex,
-			Part:         &types.OutputContentBlock{Type: "output_text"},
+			ItemID:       itemID,
+			Part:         &types.OutputContentBlock{Type: "output_text", Text: ""},
 		})
 	}
 
@@ -201,6 +286,7 @@ func (st *ResponsesStreamTranslator) handleReasoning(reasoning string) {
 		Type:         "response.reasoning_text.delta",
 		OutputIndex:  st.outputIndex,
 		ContentIndex: st.contentIndex,
+		ItemID:       st.messageItemID(),
 		Delta:        reasoning,
 	})
 }
@@ -213,21 +299,28 @@ func (st *ResponsesStreamTranslator) handleText(text string) {
 			Type:         "response.reasoning_text.done",
 			OutputIndex:  st.outputIndex,
 			ContentIndex: st.contentIndex,
+			ItemID:       st.messageItemID(),
 		})
 		st.contentIndex++
 	}
 
 	if !st.hasText {
 		st.hasText = true
-		// Emit output_item.added for message
+		itemID := st.messageItemID()
+		// Emit output_item.added for message.
+		// Codex only sets active_item when this parses as ResponseItem::Message,
+		// which requires content (even if text is still empty while streaming).
 		st.emit("response.output_item.added", types.ResponseOutputItemAddedEvent{
-			Type:  "response.output_item.added",
-			Index: st.outputIndex,
+			Type:        "response.output_item.added",
+			OutputIndex: st.outputIndex,
 			Item: &types.ResponseOutputItem{
 				Type:   "message",
-				ID:     fmt.Sprintf("msg_%s", st.responseID),
+				ID:     itemID,
 				Role:   "assistant",
 				Status: "in_progress",
+				Content: []types.OutputContentBlock{
+					{Type: "output_text", Text: ""},
+				},
 			},
 		})
 
@@ -236,7 +329,8 @@ func (st *ResponsesStreamTranslator) handleText(text string) {
 			Type:         "response.content_part.added",
 			OutputIndex:  st.outputIndex,
 			ContentIndex: st.contentIndex,
-			Part:         &types.OutputContentBlock{Type: "output_text"},
+			ItemID:       itemID,
+			Part:         &types.OutputContentBlock{Type: "output_text", Text: ""},
 		})
 	}
 
@@ -245,6 +339,7 @@ func (st *ResponsesStreamTranslator) handleText(text string) {
 		Type:         "response.output_text.delta",
 		OutputIndex:  st.outputIndex,
 		ContentIndex: st.contentIndex,
+		ItemID:       st.messageItemID(),
 		Delta:        text,
 	})
 }
@@ -252,10 +347,12 @@ func (st *ResponsesStreamTranslator) handleText(text string) {
 func (st *ResponsesStreamTranslator) finish(usage *types.OpenAIUsage) {
 	// Close any open text block
 	if st.hasText {
+		itemID := st.messageItemID()
 		st.emit("response.output_text.done", types.ResponseOutputTextDoneEvent{
 			Type:         "response.output_text.done",
 			OutputIndex:  st.outputIndex,
 			ContentIndex: st.contentIndex,
+			ItemID:       itemID,
 			Text:         st.textAccum,
 		})
 
@@ -263,6 +360,7 @@ func (st *ResponsesStreamTranslator) finish(usage *types.OpenAIUsage) {
 			Type:         "response.content_part.done",
 			OutputIndex:  st.outputIndex,
 			ContentIndex: st.contentIndex,
+			ItemID:       itemID,
 			Part: &types.OutputContentBlock{
 				Type: "output_text",
 				Text: st.textAccum,
@@ -270,11 +368,11 @@ func (st *ResponsesStreamTranslator) finish(usage *types.OpenAIUsage) {
 		})
 
 		st.emit("response.output_item.done", types.ResponseOutputItemDoneEvent{
-			Type:  "response.output_item.done",
-			Index: st.outputIndex,
+			Type:        "response.output_item.done",
+			OutputIndex: st.outputIndex,
 			Item: &types.ResponseOutputItem{
 				Type:   "message",
-				ID:     fmt.Sprintf("msg_%s", st.responseID),
+				ID:     itemID,
 				Role:   "assistant",
 				Status: "completed",
 				Content: []types.OutputContentBlock{
@@ -292,6 +390,7 @@ func (st *ResponsesStreamTranslator) finish(usage *types.OpenAIUsage) {
 			Type:         "response.reasoning_text.done",
 			OutputIndex:  st.outputIndex,
 			ContentIndex: st.contentIndex,
+			ItemID:       st.messageItemID(),
 		})
 		st.inReasoning = false
 	}
@@ -299,29 +398,70 @@ func (st *ResponsesStreamTranslator) finish(usage *types.OpenAIUsage) {
 	// Close tool calls
 	for i, tc := range st.toolCalls {
 		idx := i + st.outputIndexOffset()
+		if tc.isCustom {
+			itemID := st.customToolCallItemID(tc.id)
+			input := extractCustomToolInput(tc.arguments)
+			// Emit any remaining input that wasn't streamed yet
+			if len(input) > tc.inputEmitted {
+				delta := input[tc.inputEmitted:]
+				st.emit("response.custom_tool_call_input.delta", types.ResponseCustomToolCallInputDeltaEvent{
+					Type:        "response.custom_tool_call_input.delta",
+					OutputIndex: idx,
+					ItemID:      itemID,
+					Delta:       delta,
+				})
+			}
+			st.emit("response.custom_tool_call_input.done", types.ResponseCustomToolCallInputDoneEvent{
+				Type:        "response.custom_tool_call_input.done",
+				OutputIndex: idx,
+				ItemID:      itemID,
+				Input:       input,
+			})
+			st.emit("response.output_item.done", types.ResponseOutputItemDoneEvent{
+				Type:        "response.output_item.done",
+				OutputIndex: idx,
+				Item: &types.ResponseOutputItem{
+					Type:   "custom_tool_call",
+					ID:     itemID,
+					CallID: tc.id,
+					Name:   tc.name,
+					Input:  input,
+					Status: "completed",
+				},
+			})
+			continue
+		}
+		itemID := st.functionCallItemID(tc.id)
 		st.emit("response.function_call_arguments.done", types.ResponseFunctionCallArgumentsDoneEvent{
 			Type:        "response.function_call_arguments.done",
 			OutputIndex: idx,
+			ItemID:      itemID,
 			Arguments:   tc.arguments,
 		})
 
 		st.emit("response.output_item.done", types.ResponseOutputItemDoneEvent{
-			Type:  "response.output_item.done",
-			Index: idx,
+			Type:        "response.output_item.done",
+			OutputIndex: idx,
 			Item: &types.ResponseOutputItem{
 				Type:      "function_call",
+				ID:        itemID,
 				CallID:    tc.id,
 				Name:      tc.name,
-				Arguments: tc.arguments,
+				Arguments: strPtr(tc.arguments),
 				Status:    "completed",
 			},
 		})
 	}
 
 	// Build final response for response.completed
+	createdAt := st.createdAt
+	if createdAt == 0 {
+		createdAt = time.Now().Unix()
+	}
 	resp := &types.ResponsesResponse{
 		ID:        st.responseID,
 		Object:    "response",
+		CreatedAt: createdAt,
 		Model:     st.model,
 		Status:    "completed",
 		Output:    st.buildOutput(),
@@ -361,16 +501,30 @@ func (st *ResponsesStreamTranslator) buildOutput() []types.ResponseOutputItem {
 	}
 
 	for _, tc := range st.toolCalls {
+		if tc.isCustom {
+			output = append(output, types.ResponseOutputItem{
+				Type:   "custom_tool_call",
+				CallID: tc.id,
+				Name:   tc.name,
+				Input:  extractCustomToolInput(tc.arguments),
+				Status: "completed",
+			})
+			continue
+		}
 		output = append(output, types.ResponseOutputItem{
 			Type:      "function_call",
 			CallID:    tc.id,
 			Name:      tc.name,
-			Arguments: tc.arguments,
+			Arguments: strPtr(tc.arguments),
 			Status:    "completed",
 		})
 	}
 
 	return output
+}
+
+func strPtr(s string) *string {
+	return &s
 }
 
 func (st *ResponsesStreamTranslator) buildUsage(usage *types.OpenAIUsage) *types.ResponsesUsage {

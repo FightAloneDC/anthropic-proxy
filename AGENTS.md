@@ -107,3 +107,23 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 <!-- gbrain:retrieval-reflex:resolver-rows -->
 - retrieval-reflex | a named person/company/project/place becomes the subject; a brain-page pointer appears in context; "who is", "what do we know about", "tell me about"; about to assert a non-trivial detail about a named entity
 <!-- /gbrain:retrieval-reflex:resolver-rows -->
+
+
+---
+
+## enowx-rag memory
+
+This project uses the `enowx-rag` MCP server for per-project memory.
+
+### Before coding
+
+1. Call `rag_retrieve_context` with the project ID `anthropic-proxy` and the user's query.
+2. Read the returned context. If relevant, use it to shape your answer or plan.
+
+### After coding
+
+1. Summarize what you changed.
+2. Call `rag_index` with useful new facts, design decisions, gotchas, or patterns under project ID `anthropic-proxy`.
+
+Keep chunks concise (one idea per chunk). Use metadata tags like `type:architecture`, `type:decision`, `type:api`, `type:bugfix`, `type:howto`, or `type:snippet`.
+
