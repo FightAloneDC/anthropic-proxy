@@ -96,11 +96,28 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 8. **NO sudo unless absolutely necessary** — only when user directly requests it. Default to regular user commands.
 9. **NEVER COMMAND OR INSTRUCT THE USER** — maintain assistant role. Suggest options instead. Say "Opsi:", "Bisa:", "Opsional:" — not "You should...".
 
+## Documentation (agents)
+
+Canonical docs live under `docs/`. Start at **`docs/README.md`**.
+
+| Allowed | Forbidden |
+|---------|-----------|
+| `docs/README.md` (index) | **`docs/archives/**` — never open, cite, or “revive” as roadmap** |
+| `docs/ARCHITECTURE.md` | Old phase plans / bug reports (all archived) |
+| `docs/API.md` | Treating archive content as current truth |
+| `docs/RESPONSES_API.md` | |
+| `docs/CONFIGURATION.md` | |
+| `docs/TROUBLESHOOTING.md` | |
+
+- **Archives are user-only history.** Agents must not read `docs/archives/` for implementation context.
+- If docs and code disagree, **code wins**; update the matching live doc when the public API/config changes.
+- Codex / Responses custom tools (`exec` → `custom_tool_call`) are documented in `docs/RESPONSES_API.md`.
+
 ## Context
 
 - Language: Go (go 1.21)
 - Project: anthropic-proxy
-- Generated: 2026-06-19
+- Docs index: `docs/README.md`
 - Rules source: MASTER-AGENTS.md + rules.yaml + CLAUDE.md
 
 

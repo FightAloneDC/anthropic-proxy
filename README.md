@@ -717,10 +717,13 @@ anthropic-proxy/
 │       ├── gemini.go        # Gemini API types
 │       └── embeddings.go    # OpenAI Embeddings API types
 ├── docs/
-│   ├── ARCHITECTURE.md      # Internal design, translation patterns
-│   ├── TROUBLESHOOTING.md   # Known issues, fixes, debugging tips
-│   ├── ROADMAP.md           # Development plan, features, milestones
-│   └── ADVANCED_TRANSLATION_V2.9.0_PLAN.md  # v2.9.0 implementation plan
+│   ├── README.md            # Doc index (agents: start here)
+│   ├── ARCHITECTURE.md      # Packages, request flow, multi-backend
+│   ├── API.md               # Public HTTP routes
+│   ├── RESPONSES_API.md     # Responses / Codex custom tools
+│   ├── CONFIGURATION.md     # config.yaml reference
+│   ├── TROUBLESHOOTING.md   # Failures, Codex traffic, debug
+│   └── archives/            # Historical only — agents must not use
 ├── build/                   # Build output (gitignored)
 ├── config.example.yaml      # Example configuration
 ├── go.mod
@@ -739,9 +742,13 @@ anthropic-proxy/
 
 ## Documentation
 
-- [Architecture](docs/ARCHITECTURE.md) — how the proxy works, translation patterns, data flow
-- [Troubleshooting](docs/TROUBLESHOOTING.md) — known issues, fixes, debugging tips
-- [Roadmap](docs/ROADMAP.md) — future development plan, features, milestones
+- [docs/README.md](docs/README.md) — **index** (canonical set)
+- [Architecture](docs/ARCHITECTURE.md) — packages, flow, store, reliability
+- [API](docs/API.md) — public routes and surfaces
+- [Responses / Codex](docs/RESPONSES_API.md) — Responses translation + `custom_tool_call`
+- [Configuration](docs/CONFIGURATION.md) — `config.yaml` reference
+- [Troubleshooting](docs/TROUBLESHOOTING.md) — common issues and client vs proxy traffic
+- `docs/archives/` — obsolete plans/reports for humans only; **not for agents**
 
 ## License
 
