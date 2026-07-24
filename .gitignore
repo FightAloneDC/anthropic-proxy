@@ -20,6 +20,7 @@
 /anthropic-proxy
 certs/
 /data/
+/logs/
 
 #-------------------------
 # Common Go ignores
